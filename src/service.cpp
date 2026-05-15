@@ -11,7 +11,10 @@
 #include <vector>
 
 #include "shared.h"
+
+extern "C" {
 #include "tray_rpc.h"
+}
 
 SERVICE_STATUS_HANDLE g_status_handle = nullptr;
 SERVICE_STATUS g_status{};

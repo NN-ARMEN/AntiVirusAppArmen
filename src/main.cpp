@@ -8,7 +8,10 @@
 
 #include "resource.h"
 #include "shared.h"
+
+extern "C" {
 #include "tray_rpc.h"
+}
 
 namespace {
 
