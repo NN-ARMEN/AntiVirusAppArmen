@@ -20,7 +20,10 @@ add_custom_command(
     VERBATIM
 )
 
-set_source_files_properties(${RPC_CLIENT} ${RPC_SERVER} PROPERTIES GENERATED TRUE)
+set_source_files_properties(${RPC_CLIENT} ${RPC_SERVER} PROPERTIES
+    GENERATED TRUE
+    LANGUAGE C
+)
 add_custom_target(GenerateRpc DEPENDS ${RPC_HEADER} ${RPC_CLIENT} ${RPC_SERVER})
 
 add_executable(ZIOVPOTrayApp WIN32
