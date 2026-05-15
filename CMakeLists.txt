@@ -23,28 +23,20 @@ add_custom_command(
 set_source_files_properties(${RPC_CLIENT} ${RPC_SERVER} PROPERTIES
     GENERATED TRUE
     LANGUAGE C
+    COMPILE_FLAGS "/TC"
 )
 add_custom_target(GenerateRpc DEPENDS ${RPC_HEADER} ${RPC_CLIENT} ${RPC_SERVER})
-
-add_library(ZIOVPORpcClientStub OBJECT ${RPC_CLIENT})
-add_library(ZIOVPORpcServerStub OBJECT ${RPC_SERVER})
-
-add_dependencies(ZIOVPORpcClientStub GenerateRpc)
-add_dependencies(ZIOVPORpcServerStub GenerateRpc)
-
-target_include_directories(ZIOVPORpcClientStub PRIVATE ${RPC_GEN_DIR})
-target_include_directories(ZIOVPORpcServerStub PRIVATE ${RPC_GEN_DIR})
 
 add_executable(ZIOVPOTrayApp WIN32
     src/main.cpp
     src/rpc_client.cpp
     resources/app.rc
-    $<TARGET_OBJECTS:ZIOVPORpcClientStub>
+    ${RPC_CLIENT}
 )
 
 add_executable(ZIOVPOService
     src/service.cpp
-    $<TARGET_OBJECTS:ZIOVPORpcServerStub>
+    ${RPC_SERVER}
 )
 
 add_dependencies(ZIOVPOTrayApp GenerateRpc)
