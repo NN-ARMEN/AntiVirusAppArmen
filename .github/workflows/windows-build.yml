@@ -19,7 +19,13 @@ jobs:
         run: cmake -S . -B build -G "Visual Studio 17 2022" -A x64
 
       - name: Build
-        run: cmake --build build --config Release
+        shell: pwsh
+        run: |
+          cmake --build build --config Release --target ZIOVPORpcClientStub
+          cmake --build build --config Release --target ZIOVPORpcServerStub
+          dumpbin /symbols build/Release/ZIOVPORpcClientStub.lib | Select-String "Stop|ifspec|IfHandle|RPC"
+          dumpbin /symbols build/Release/ZIOVPORpcServerStub.lib | Select-String "Stop|ifspec|IfHandle|RPC"
+          cmake --build build --config Release
 
       - name: Prepare artifact
         shell: pwsh
