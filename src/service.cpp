@@ -13,7 +13,7 @@
 #include "shared.h"
 
 extern "C" {
-#include "tray_rpc.h"
+#include "tray_rpc_h.h"
 }
 
 SERVICE_STATUS_HANDLE g_status_handle = nullptr;
@@ -351,7 +351,7 @@ int wmain() {
     return 0;
 }
 
-extern "C" void StopService(handle_t) {
+extern "C" void StopService() {
     if (g_stop_event) {
         SetEvent(g_stop_event);
     }

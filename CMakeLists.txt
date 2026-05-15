@@ -2,51 +2,54 @@ cmake_minimum_required(VERSION 3.20)
 
 project(ZIOVPOTrayApp LANGUAGES C CXX)
 
-set(RPC_IDL ${CMAKE_CURRENT_SOURCE_DIR}/src/rpc/tray_rpc.idl)
-set(RPC_GEN_DIR ${CMAKE_CURRENT_BINARY_DIR}/generated)
-set(RPC_HEADER ${RPC_GEN_DIR}/tray_rpc.h)
-set(RPC_CLIENT ${RPC_GEN_DIR}/tray_rpc_client.c)
-set(RPC_SERVER ${RPC_GEN_DIR}/tray_rpc_server.c)
+find_program(MIDL_COMPILER midl)
+if(NOT MIDL_COMPILER)
+    file(GLOB SDK_BIN_DIRS
+        "C:/Program Files (x86)/Windows Kits/10/bin/10.*/x64"
+        "C:/Program Files (x86)/Windows Kits/10/bin/x64"
+    )
+    find_program(MIDL_COMPILER midl PATHS ${SDK_BIN_DIRS})
+endif()
+if(NOT MIDL_COMPILER)
+    message(FATAL_ERROR "MIDL compiler not found. Install the Windows SDK.")
+endif()
+
+set(RPC_IDL "${CMAKE_CURRENT_SOURCE_DIR}/src/rpc/tray_rpc.idl")
+set(RPC_ACF "${CMAKE_CURRENT_SOURCE_DIR}/src/rpc/tray_rpc.acf")
+set(RPC_GEN_DIR "${CMAKE_CURRENT_BINARY_DIR}/rpc_gen")
+file(MAKE_DIRECTORY "${RPC_GEN_DIR}")
+
+set(RPC_HEADER "${RPC_GEN_DIR}/tray_rpc_h.h")
+set(RPC_CLIENT "${RPC_GEN_DIR}/tray_rpc_c.c")
+set(RPC_SERVER "${RPC_GEN_DIR}/tray_rpc_s.c")
 
 add_custom_command(
     OUTPUT ${RPC_HEADER} ${RPC_CLIENT} ${RPC_SERVER}
-    COMMAND ${CMAKE_COMMAND} -E make_directory ${RPC_GEN_DIR}
-    COMMAND midl /nologo /env win64
-            /h ${RPC_HEADER}
-            /cstub ${RPC_CLIENT}
-            /sstub ${RPC_SERVER}
+    COMMAND "${MIDL_COMPILER}"
+            /acf "${RPC_ACF}"
+            /header tray_rpc_h.h
+            /cstub tray_rpc_c.c
+            /sstub tray_rpc_s.c
+            /env x64
             ${RPC_IDL}
-    DEPENDS ${RPC_IDL}
+    DEPENDS ${RPC_IDL} ${RPC_ACF}
+    WORKING_DIRECTORY "${RPC_GEN_DIR}"
+    COMMENT "Running MIDL compiler on tray_rpc.idl"
     VERBATIM
 )
 
-set_source_files_properties(${RPC_CLIENT} ${RPC_SERVER} PROPERTIES
-    GENERATED TRUE
-    LANGUAGE C
-    COMPILE_FLAGS "/TC"
-)
-set_source_files_properties(src/rpc_client_stub.c PROPERTIES
-    LANGUAGE C
-    COMPILE_FLAGS "/TC"
-    OBJECT_DEPENDS ${RPC_CLIENT}
-)
-set_source_files_properties(src/rpc_server_stub.c PROPERTIES
-    LANGUAGE C
-    COMPILE_FLAGS "/TC"
-    OBJECT_DEPENDS ${RPC_SERVER}
-)
 add_custom_target(GenerateRpc DEPENDS ${RPC_HEADER} ${RPC_CLIENT} ${RPC_SERVER})
 
 add_executable(ZIOVPOTrayApp WIN32
     src/main.cpp
     src/rpc_client.cpp
-    src/rpc_client_stub.c
     resources/app.rc
+    ${RPC_CLIENT}
 )
 
 add_executable(ZIOVPOService
     src/service.cpp
-    src/rpc_server_stub.c
+    ${RPC_SERVER}
 )
 
 add_dependencies(ZIOVPOTrayApp GenerateRpc)

@@ -6,12 +6,11 @@
 #include "shared.h"
 
 extern "C" {
-#include "tray_rpc.h"
+#include "tray_rpc_h.h"
 }
 
 bool SendStopServiceRequest() {
     RPC_WSTR string_binding = nullptr;
-    handle_t binding = nullptr;
 
     RPC_STATUS status = RpcStringBindingComposeW(
         nullptr,
@@ -25,7 +24,7 @@ bool SendStopServiceRequest() {
         return false;
     }
 
-    status = RpcBindingFromStringBindingW(string_binding, &binding);
+    status = RpcBindingFromStringBindingW(string_binding, &hZIOVPOControlBinding);
     RpcStringFreeW(&string_binding);
     if (status != RPC_S_OK) {
         return false;
@@ -33,14 +32,14 @@ bool SendStopServiceRequest() {
 
     bool sent = true;
     RpcTryExcept {
-        StopService(binding);
+        StopService();
     }
     RpcExcept(1) {
         sent = false;
     }
     RpcEndExcept
 
-    RpcBindingFree(&binding);
+    RpcBindingFree(&hZIOVPOControlBinding);
     return sent;
 }
 
@@ -51,4 +50,3 @@ extern "C" void* __RPC_USER midl_user_allocate(size_t size) {
 extern "C" void __RPC_USER midl_user_free(void* pointer) {
     free(pointer);
 }
-
