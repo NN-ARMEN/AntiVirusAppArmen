@@ -23,8 +23,9 @@ jobs:
         run: |
           cmake --build build --config Release --target ZIOVPORpcClientStub
           cmake --build build --config Release --target ZIOVPORpcServerStub
-          dumpbin /symbols build/Release/ZIOVPORpcClientStub.lib | Select-String "Stop|ifspec|IfHandle|RPC"
-          dumpbin /symbols build/Release/ZIOVPORpcServerStub.lib | Select-String "Stop|ifspec|IfHandle|RPC"
+          Get-Content build/generated/tray_rpc.h | Select-String "Stop|ifspec|IfHandle|RPC"
+          Get-Content build/generated/tray_rpc_client.c | Select-String "Stop|ifspec|IfHandle|RPC"
+          Get-Content build/generated/tray_rpc_server.c | Select-String "Stop|ifspec|IfHandle|RPC"
           cmake --build build --config Release
 
       - name: Prepare artifact
