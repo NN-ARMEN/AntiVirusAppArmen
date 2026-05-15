@@ -25,18 +25,28 @@ set_source_files_properties(${RPC_CLIENT} ${RPC_SERVER} PROPERTIES
     LANGUAGE C
     COMPILE_FLAGS "/TC"
 )
+set_source_files_properties(src/rpc_client_stub.c PROPERTIES
+    LANGUAGE C
+    COMPILE_FLAGS "/TC"
+    OBJECT_DEPENDS ${RPC_CLIENT}
+)
+set_source_files_properties(src/rpc_server_stub.c PROPERTIES
+    LANGUAGE C
+    COMPILE_FLAGS "/TC"
+    OBJECT_DEPENDS ${RPC_SERVER}
+)
 add_custom_target(GenerateRpc DEPENDS ${RPC_HEADER} ${RPC_CLIENT} ${RPC_SERVER})
 
 add_executable(ZIOVPOTrayApp WIN32
     src/main.cpp
     src/rpc_client.cpp
+    src/rpc_client_stub.c
     resources/app.rc
-    ${RPC_CLIENT}
 )
 
 add_executable(ZIOVPOService
     src/service.cpp
-    ${RPC_SERVER}
+    src/rpc_server_stub.c
 )
 
 add_dependencies(ZIOVPOTrayApp GenerateRpc)
