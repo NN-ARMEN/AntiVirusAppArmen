@@ -4,7 +4,7 @@ on:
   push:
     branches: ["main"]
   pull_request:
-    branches: ["main"]
+    branches: ["main", "practice-1-tray-app"]
   workflow_dispatch:
 
 jobs:
