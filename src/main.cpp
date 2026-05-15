@@ -1,7 +1,14 @@
 #include <windows.h>
 #include <shellapi.h>
+#include <tlhelp32.h>
+#include <winsvc.h>
+#include <rpc.h>
+
+#include <malloc.h>
 
 #include "resource.h"
+#include "shared.h"
+#include "tray_rpc.h"
 
 namespace {
 
@@ -17,6 +24,136 @@ HINSTANCE g_instance = nullptr;
 HWND g_main_window = nullptr;
 UINT g_taskbar_created_message = 0;
 bool g_tray_icon_added = false;
+
+DWORD GetParentProcessId() {
+    const DWORD current_pid = GetCurrentProcessId();
+    DWORD parent_pid = 0;
+
+    HANDLE snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+    if (snapshot == INVALID_HANDLE_VALUE) {
+        return 0;
+    }
+
+    PROCESSENTRY32W entry{};
+    entry.dwSize = sizeof(entry);
+    if (Process32FirstW(snapshot, &entry)) {
+        do {
+            if (entry.th32ProcessID == current_pid) {
+                parent_pid = entry.th32ParentProcessID;
+                break;
+            }
+        } while (Process32NextW(snapshot, &entry));
+    }
+
+    CloseHandle(snapshot);
+    return parent_pid;
+}
+
+bool QueryServiceStatus(SC_HANDLE service, SERVICE_STATUS_PROCESS& status) {
+    DWORD bytes_needed = 0;
+    return QueryServiceStatusEx(
+        service,
+        SC_STATUS_PROCESS_INFO,
+        reinterpret_cast<LPBYTE>(&status),
+        sizeof(status),
+        &bytes_needed
+    ) != FALSE;
+}
+
+bool WaitForServiceRunning(SC_HANDLE service) {
+    SERVICE_STATUS_PROCESS status{};
+    for (int i = 0; i < 60; ++i) {
+        if (!QueryServiceStatus(service, status)) {
+            return false;
+        }
+        if (status.dwCurrentState == SERVICE_RUNNING) {
+            return true;
+        }
+        if (status.dwCurrentState == SERVICE_STOPPED) {
+            return false;
+        }
+        Sleep(500);
+    }
+    return false;
+}
+
+bool EnsureServiceContextOrStartAndExit() {
+    SC_HANDLE manager = OpenSCManagerW(nullptr, nullptr, SC_MANAGER_CONNECT);
+    if (!manager) {
+        return false;
+    }
+
+    SC_HANDLE service = OpenServiceW(manager, kServiceName, SERVICE_QUERY_STATUS | SERVICE_START);
+    if (!service) {
+        CloseServiceHandle(manager);
+        return false;
+    }
+
+    SERVICE_STATUS_PROCESS status{};
+    if (!QueryServiceStatus(service, status)) {
+        CloseServiceHandle(service);
+        CloseServiceHandle(manager);
+        return false;
+    }
+
+    if (status.dwCurrentState == SERVICE_STOPPED) {
+        StartServiceW(service, 0, nullptr);
+        WaitForServiceRunning(service);
+        CloseServiceHandle(service);
+        CloseServiceHandle(manager);
+        return false;
+    }
+
+    if (status.dwCurrentState != SERVICE_RUNNING) {
+        WaitForServiceRunning(service);
+        CloseServiceHandle(service);
+        CloseServiceHandle(manager);
+        return false;
+    }
+
+    const DWORD service_pid = status.dwProcessId;
+    const DWORD parent_pid = GetParentProcessId();
+
+    CloseServiceHandle(service);
+    CloseServiceHandle(manager);
+
+    return service_pid != 0 && parent_pid == service_pid;
+}
+
+bool StopServiceThroughRpc() {
+    RPC_WSTR string_binding = nullptr;
+    handle_t binding = nullptr;
+
+    RPC_STATUS status = RpcStringBindingComposeW(
+        nullptr,
+        reinterpret_cast<RPC_WSTR>(const_cast<wchar_t*>(L"ncalrpc")),
+        nullptr,
+        reinterpret_cast<RPC_WSTR>(const_cast<wchar_t*>(kRpcEndpoint)),
+        nullptr,
+        &string_binding
+    );
+    if (status != RPC_S_OK) {
+        return false;
+    }
+
+    status = RpcBindingFromStringBindingW(string_binding, &binding);
+    RpcStringFreeW(&string_binding);
+    if (status != RPC_S_OK) {
+        return false;
+    }
+
+    bool sent = true;
+    RpcTryExcept {
+        StopService(binding);
+    }
+    RpcExcept(1) {
+        sent = false;
+    }
+    RpcEndExcept
+
+    RpcBindingFree(&binding);
+    return sent;
+}
 
 void ShowMainWindow() {
     if (!g_main_window) {
@@ -69,6 +206,7 @@ bool AddTrayIcon() {
 }
 
 void ExitApplication() {
+    StopServiceThroughRpc();
     RemoveTrayIcon();
     DestroyWindow(g_main_window);
     PostQuitMessage(0);
@@ -229,6 +367,10 @@ HWND CreateMainWindow() {
 } // namespace
 
 int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR command_line, int show_command) {
+    if (!EnsureServiceContextOrStartAndExit()) {
+        return 0;
+    }
+
     HANDLE single_instance_mutex = CreateMutex(nullptr, TRUE, kMutexName);
     if (!single_instance_mutex) {
         return 1;
@@ -268,4 +410,12 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR command_line, int show
 
     CloseHandle(single_instance_mutex);
     return static_cast<int>(message.wParam);
+}
+
+extern "C" void* __RPC_USER midl_user_allocate(size_t size) {
+    return malloc(size);
+}
+
+extern "C" void __RPC_USER midl_user_free(void* pointer) {
+    free(pointer);
 }
