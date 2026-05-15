@@ -125,7 +125,6 @@ bool EnsureServiceContextOrStartAndExit() {
 
 bool StopServiceThroughRpc() {
     RPC_WSTR string_binding = nullptr;
-    handle_t binding = nullptr;
 
     RPC_STATUS status = RpcStringBindingComposeW(
         nullptr,
@@ -139,7 +138,7 @@ bool StopServiceThroughRpc() {
         return false;
     }
 
-    status = RpcBindingFromStringBindingW(string_binding, &binding);
+    status = RpcBindingFromStringBindingW(string_binding, &ZIOVPOControl_IfHandle);
     RpcStringFreeW(&string_binding);
     if (status != RPC_S_OK) {
         return false;
@@ -147,14 +146,14 @@ bool StopServiceThroughRpc() {
 
     bool sent = true;
     RpcTryExcept {
-        StopService(binding);
+        StopService();
     }
     RpcExcept(1) {
         sent = false;
     }
     RpcEndExcept
 
-    RpcBindingFree(&binding);
+    RpcBindingFree(&ZIOVPOControl_IfHandle);
     return sent;
 }
 
