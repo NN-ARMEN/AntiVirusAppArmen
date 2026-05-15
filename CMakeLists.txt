@@ -26,8 +26,8 @@ set_source_files_properties(${RPC_CLIENT} ${RPC_SERVER} PROPERTIES
 )
 add_custom_target(GenerateRpc DEPENDS ${RPC_HEADER} ${RPC_CLIENT} ${RPC_SERVER})
 
-add_library(ZIOVPORpcClientStub STATIC ${RPC_CLIENT})
-add_library(ZIOVPORpcServerStub STATIC ${RPC_SERVER})
+add_library(ZIOVPORpcClientStub OBJECT ${RPC_CLIENT})
+add_library(ZIOVPORpcServerStub OBJECT ${RPC_SERVER})
 
 add_dependencies(ZIOVPORpcClientStub GenerateRpc)
 add_dependencies(ZIOVPORpcServerStub GenerateRpc)
@@ -39,10 +39,12 @@ add_executable(ZIOVPOTrayApp WIN32
     src/main.cpp
     src/rpc_client.cpp
     resources/app.rc
+    $<TARGET_OBJECTS:ZIOVPORpcClientStub>
 )
 
 add_executable(ZIOVPOService
     src/service.cpp
+    $<TARGET_OBJECTS:ZIOVPORpcServerStub>
 )
 
 add_dependencies(ZIOVPOTrayApp GenerateRpc)
@@ -74,7 +76,6 @@ target_link_libraries(ZIOVPOTrayApp PRIVATE
     gdi32
     advapi32
     rpcrt4
-    ZIOVPORpcClientStub
 )
 
 target_link_libraries(ZIOVPOService PRIVATE
@@ -82,5 +83,4 @@ target_link_libraries(ZIOVPOService PRIVATE
     rpcrt4
     userenv
     wtsapi32
-    ZIOVPORpcServerStub
 )
