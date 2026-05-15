@@ -351,7 +351,7 @@ int wmain() {
     return 0;
 }
 
-extern "C" void StopService() {
+extern "C" void StopService(handle_t) {
     if (g_stop_event) {
         SetEvent(g_stop_event);
     }

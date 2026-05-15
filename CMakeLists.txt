@@ -11,7 +11,7 @@ set(RPC_SERVER ${RPC_GEN_DIR}/tray_rpc_server.c)
 add_custom_command(
     OUTPUT ${RPC_HEADER} ${RPC_CLIENT} ${RPC_SERVER}
     COMMAND ${CMAKE_COMMAND} -E make_directory ${RPC_GEN_DIR}
-    COMMAND midl /nologo /env win64 /app_config
+    COMMAND midl /nologo /env win64
             /h ${RPC_HEADER}
             /cstub ${RPC_CLIENT}
             /sstub ${RPC_SERVER}
@@ -25,6 +25,7 @@ add_custom_target(GenerateRpc DEPENDS ${RPC_HEADER} ${RPC_CLIENT} ${RPC_SERVER})
 
 add_executable(ZIOVPOTrayApp WIN32
     src/main.cpp
+    src/rpc_client.cpp
     resources/app.rc
     ${RPC_CLIENT}
 )

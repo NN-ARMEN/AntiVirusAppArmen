@@ -2,16 +2,11 @@
 #include <shellapi.h>
 #include <tlhelp32.h>
 #include <winsvc.h>
-#include <rpc.h>
-
-#include <malloc.h>
 
 #include "resource.h"
 #include "shared.h"
 
-extern "C" {
-#include "tray_rpc.h"
-}
+bool SendStopServiceRequest();
 
 namespace {
 
@@ -123,40 +118,6 @@ bool EnsureServiceContextOrStartAndExit() {
     return service_pid != 0 && parent_pid == service_pid;
 }
 
-bool StopServiceThroughRpc() {
-    RPC_WSTR string_binding = nullptr;
-
-    RPC_STATUS status = RpcStringBindingComposeW(
-        nullptr,
-        reinterpret_cast<RPC_WSTR>(const_cast<wchar_t*>(L"ncalrpc")),
-        nullptr,
-        reinterpret_cast<RPC_WSTR>(const_cast<wchar_t*>(kRpcEndpoint)),
-        nullptr,
-        &string_binding
-    );
-    if (status != RPC_S_OK) {
-        return false;
-    }
-
-    status = RpcBindingFromStringBindingW(string_binding, &ZIOVPOControl_IfHandle);
-    RpcStringFreeW(&string_binding);
-    if (status != RPC_S_OK) {
-        return false;
-    }
-
-    bool sent = true;
-    RpcTryExcept {
-        StopService();
-    }
-    RpcExcept(1) {
-        sent = false;
-    }
-    RpcEndExcept
-
-    RpcBindingFree(&ZIOVPOControl_IfHandle);
-    return sent;
-}
-
 void ShowMainWindow() {
     if (!g_main_window) {
         return;
@@ -208,7 +169,7 @@ bool AddTrayIcon() {
 }
 
 void ExitApplication() {
-    StopServiceThroughRpc();
+    SendStopServiceRequest();
     RemoveTrayIcon();
     DestroyWindow(g_main_window);
     PostQuitMessage(0);
@@ -412,12 +373,4 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR command_line, int show
 
     CloseHandle(single_instance_mutex);
     return static_cast<int>(message.wParam);
-}
-
-extern "C" void* __RPC_USER midl_user_allocate(size_t size) {
-    return malloc(size);
-}
-
-extern "C" void __RPC_USER midl_user_free(void* pointer) {
-    free(pointer);
 }
