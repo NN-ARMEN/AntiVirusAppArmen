@@ -1,6 +1,4 @@
 #include <windows.h>
-#include <aclapi.h>
-#include <sddl.h>
 #include <userenv.h>
 #include <wtsapi32.h>
 #include <rpc.h>
@@ -42,51 +40,6 @@ void WriteLog(const std::wstring& message) {
 
 void WriteLastErrorLog(const std::wstring& operation) {
     WriteLog(operation + L" failed, error=" + std::to_wstring(GetLastError()));
-}
-
-PSECURITY_DESCRIPTOR CreateProtectedProcessSecurityDescriptor() {
-    PSECURITY_DESCRIPTOR security_descriptor = nullptr;
-    constexpr wchar_t kProtectedProcessSddl[] =
-        L"D:P"
-        L"(A;;GA;;;SY)"
-        L"(A;;GA;;;BA)"
-        L"(A;;GR;;;IU)"
-        L"(A;;GR;;;BU)";
-
-    if (!ConvertStringSecurityDescriptorToSecurityDescriptorW(
-            kProtectedProcessSddl,
-            SDDL_REVISION_1,
-            &security_descriptor,
-            nullptr)) {
-        return nullptr;
-    }
-
-    return security_descriptor;
-}
-
-void ApplyProtectedDaclToCurrentProcess() {
-    PSECURITY_DESCRIPTOR security_descriptor = CreateProtectedProcessSecurityDescriptor();
-    if (!security_descriptor) {
-        return;
-    }
-
-    PACL dacl = nullptr;
-    BOOL dacl_present = FALSE;
-    BOOL dacl_defaulted = FALSE;
-    if (GetSecurityDescriptorDacl(security_descriptor, &dacl_present, &dacl, &dacl_defaulted) &&
-        dacl_present) {
-        SetSecurityInfo(
-            GetCurrentProcess(),
-            SE_KERNEL_OBJECT,
-            DACL_SECURITY_INFORMATION,
-            nullptr,
-            nullptr,
-            dacl,
-            nullptr
-        );
-    }
-
-    LocalFree(security_descriptor);
 }
 
 void SetServiceState(DWORD state, DWORD win32_exit_code = NO_ERROR, DWORD wait_hint = 0) {
@@ -223,18 +176,12 @@ void LaunchTrayForSession(DWORD session_id) {
     startup.cb = sizeof(startup);
     startup.lpDesktop = const_cast<LPWSTR>(L"winsta0\\default");
 
-    PSECURITY_DESCRIPTOR process_security_descriptor = CreateProtectedProcessSecurityDescriptor();
-    SECURITY_ATTRIBUTES process_security{};
-    process_security.nLength = sizeof(process_security);
-    process_security.lpSecurityDescriptor = process_security_descriptor;
-    process_security.bInheritHandle = FALSE;
-
     PROCESS_INFORMATION process{};
     const BOOL created = CreateProcessAsUserW(
         primary_token,
         app_path.c_str(),
         command_line.data(),
-        process_security_descriptor ? &process_security : nullptr,
+        nullptr,
         nullptr,
         FALSE,
         CREATE_UNICODE_ENVIRONMENT,
@@ -244,9 +191,6 @@ void LaunchTrayForSession(DWORD session_id) {
         &process
     );
 
-    if (process_security_descriptor) {
-        LocalFree(process_security_descriptor);
-    }
     if (environment) {
         DestroyEnvironmentBlock(environment);
     }
@@ -346,7 +290,6 @@ void WINAPI ServiceMain(DWORD, LPWSTR*) {
     g_status.dwServiceType = SERVICE_WIN32_OWN_PROCESS;
     g_status.dwServiceSpecificExitCode = 0;
     SetServiceState(SERVICE_START_PENDING, NO_ERROR, 3000);
-    ApplyProtectedDaclToCurrentProcess();
 
     InitializeCriticalSection(&g_process_lock);
     g_stop_event = CreateEventW(nullptr, TRUE, FALSE, nullptr);
