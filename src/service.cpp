@@ -7,6 +7,7 @@
 
 #include <algorithm>
 #include <malloc.h>
+#include <fstream>
 #include <string>
 #include <vector>
 
@@ -21,6 +22,27 @@ SERVICE_STATUS g_status{};
 HANDLE g_stop_event = nullptr;
 CRITICAL_SECTION g_process_lock;
 std::vector<PROCESS_INFORMATION> g_tray_processes;
+
+std::wstring GetCurrentDirectoryForModule();
+
+void WriteLog(const std::wstring& message) {
+    const std::wstring log_path = GetCurrentDirectoryForModule() + L"\\ZIOVPOService.log";
+    std::wofstream log(log_path.c_str(), std::ios::app);
+    if (!log) {
+        return;
+    }
+
+    SYSTEMTIME now{};
+    GetLocalTime(&now);
+    log << L"["
+        << now.wYear << L"-" << now.wMonth << L"-" << now.wDay << L" "
+        << now.wHour << L":" << now.wMinute << L":" << now.wSecond << L"] "
+        << message << L"\n";
+}
+
+void WriteLastErrorLog(const std::wstring& operation) {
+    WriteLog(operation + L" failed, error=" + std::to_wstring(GetLastError()));
+}
 
 PSECURITY_DESCRIPTOR CreateProtectedProcessSecurityDescriptor() {
     PSECURITY_DESCRIPTOR security_descriptor = nullptr;
@@ -163,12 +185,16 @@ void TerminateTrayProcesses() {
 }
 
 void LaunchTrayForSession(DWORD session_id) {
+    WriteLog(L"Trying to launch tray for session " + std::to_wstring(session_id));
+
     if (session_id == 0 || HasTrayProcessInSession(session_id)) {
+        WriteLog(L"Skipping session " + std::to_wstring(session_id));
         return;
     }
 
     HANDLE user_token = nullptr;
     if (!WTSQueryUserToken(session_id, &user_token)) {
+        WriteLastErrorLog(L"WTSQueryUserToken for session " + std::to_wstring(session_id));
         return;
     }
 
@@ -180,6 +206,7 @@ void LaunchTrayForSession(DWORD session_id) {
             SecurityImpersonation,
             TokenPrimary,
             &primary_token)) {
+        WriteLastErrorLog(L"DuplicateTokenEx");
         CloseHandle(user_token);
         return;
     }
@@ -190,6 +217,7 @@ void LaunchTrayForSession(DWORD session_id) {
 
     const std::wstring app_path = GetCurrentDirectoryForModule() + L"\\" + kTrayAppExecutableName;
     std::wstring command_line = Quote(app_path) + L" " + kBackgroundArgument;
+    WriteLog(L"Tray path: " + app_path);
 
     STARTUPINFOW startup{};
     startup.cb = sizeof(startup);
@@ -225,21 +253,31 @@ void LaunchTrayForSession(DWORD session_id) {
     CloseHandle(primary_token);
 
     if (created) {
+        WriteLog(L"Tray process started, pid=" + std::to_wstring(process.dwProcessId));
         RememberTrayProcess(process);
+    } else {
+        WriteLastErrorLog(L"CreateProcessAsUserW");
     }
 }
 
 void LaunchTrayForLoggedOnSessions() {
+    WriteLog(L"Enumerating terminal sessions");
     CleanupStoppedTrayProcesses();
 
     WTS_SESSION_INFOW* sessions = nullptr;
     DWORD count = 0;
     if (!WTSEnumerateSessionsW(WTS_CURRENT_SERVER_HANDLE, 0, 1, &sessions, &count)) {
+        WriteLastErrorLog(L"WTSEnumerateSessionsW");
         return;
     }
 
     for (DWORD i = 0; i < count; ++i) {
-        if (sessions[i].SessionId != 0) {
+        WriteLog(
+            L"Session " + std::to_wstring(sessions[i].SessionId) +
+            L", state=" + std::to_wstring(static_cast<int>(sessions[i].State))
+        );
+        if (sessions[i].SessionId != 0 &&
+            (sessions[i].State == WTSActive || sessions[i].State == WTSConnected)) {
             LaunchTrayForSession(sessions[i].SessionId);
         }
     }
@@ -248,6 +286,7 @@ void LaunchTrayForLoggedOnSessions() {
 }
 
 DWORD WINAPI RpcThreadProc(void*) {
+    WriteLog(L"Starting RPC server");
     RPC_STATUS status = RpcServerUseProtseqEpW(
         reinterpret_cast<RPC_WSTR>(const_cast<wchar_t*>(L"ncalrpc")),
         RPC_C_PROTSEQ_MAX_REQS_DEFAULT,
@@ -255,21 +294,26 @@ DWORD WINAPI RpcThreadProc(void*) {
         nullptr
     );
     if (status != RPC_S_OK) {
+        WriteLog(L"RpcServerUseProtseqEpW failed, status=" + std::to_wstring(status));
         SetEvent(g_stop_event);
         return status;
     }
 
     status = RpcServerRegisterIf(ZIOVPOControl_v1_0_s_ifspec, nullptr, nullptr);
     if (status != RPC_S_OK) {
+        WriteLog(L"RpcServerRegisterIf failed, status=" + std::to_wstring(status));
         SetEvent(g_stop_event);
         return status;
     }
 
     status = RpcServerListen(1, RPC_C_LISTEN_MAX_CALLS_DEFAULT, TRUE);
     if (status != RPC_S_OK && status != RPC_S_ALREADY_LISTENING) {
+        WriteLog(L"RpcServerListen failed, status=" + std::to_wstring(status));
         SetEvent(g_stop_event);
         return status;
     }
+
+    WriteLog(L"RPC server started");
 
     return ERROR_SUCCESS;
 }
@@ -321,11 +365,13 @@ void WINAPI ServiceMain(DWORD, LPWSTR*) {
     }
 
     SetServiceState(SERVICE_RUNNING);
+    WriteLog(L"Service is running");
     LaunchTrayForLoggedOnSessions();
 
     WaitForSingleObject(g_stop_event, INFINITE);
 
     SetServiceState(SERVICE_STOP_PENDING, NO_ERROR, 3000);
+    WriteLog(L"Service is stopping");
     RpcMgmtStopServerListening(nullptr);
     WaitForSingleObject(rpc_thread, 3000);
     RpcServerUnregisterIf(ZIOVPOControl_v1_0_s_ifspec, nullptr, FALSE);
