@@ -3,6 +3,8 @@
 #include <tlhelp32.h>
 #include <winsvc.h>
 
+#include <string>
+
 #include "resource.h"
 #include "shared.h"
 
@@ -22,6 +24,35 @@ HINSTANCE g_instance = nullptr;
 HWND g_main_window = nullptr;
 UINT g_taskbar_created_message = 0;
 bool g_tray_icon_added = false;
+
+std::wstring GetExecutableDirectory() {
+    wchar_t path[MAX_PATH]{};
+    GetModuleFileNameW(nullptr, path, MAX_PATH);
+
+    std::wstring module_path(path);
+    const size_t slash = module_path.find_last_of(L"\\/");
+    if (slash == std::wstring::npos) {
+        return L".";
+    }
+    return module_path.substr(0, slash);
+}
+
+void PlayWindowOpenSound() {
+    const std::wstring sound_path = GetExecutableDirectory() + L"\\open.mp3";
+    if (GetFileAttributesW(sound_path.c_str()) == INVALID_FILE_ATTRIBUTES) {
+        return;
+    }
+
+    mciSendStringW(L"close ziovpo_open_sound", nullptr, 0, nullptr);
+
+    const std::wstring open_command =
+        L"open \"" + sound_path + L"\" type mpegvideo alias ziovpo_open_sound";
+    if (mciSendStringW(open_command.c_str(), nullptr, 0, nullptr) != 0) {
+        return;
+    }
+
+    mciSendStringW(L"play ziovpo_open_sound from 0", nullptr, 0, nullptr);
+}
 
 DWORD GetParentProcessId() {
     const DWORD current_pid = GetCurrentProcessId();
@@ -129,6 +160,7 @@ void ShowMainWindow() {
 
     ShowWindow(g_main_window, SW_SHOWNORMAL);
     SetForegroundWindow(g_main_window);
+    PlayWindowOpenSound();
 }
 
 void RemoveTrayIcon() {
@@ -367,6 +399,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR command_line, int show
     if (!IsBackgroundMode(command_line)) {
         ShowWindow(g_main_window, show_command);
         UpdateWindow(g_main_window);
+        PlayWindowOpenSound();
     }
 
     MSG message{};

@@ -81,6 +81,7 @@ target_link_libraries(ZIOVPOTrayApp PRIVATE
     gdi32
     advapi32
     rpcrt4
+    winmm
 )
 
 target_link_libraries(ZIOVPOService PRIVATE

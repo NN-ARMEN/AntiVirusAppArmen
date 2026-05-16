@@ -92,6 +92,8 @@ sc.exe delete ZIOVPOPracticeService
 
 Начиная с задания 2 ручной запуск используется только для проверки логики старта службы. Если приложение запущено не службой, оно завершится после проверки.
 
+Если рядом с `ZIOVPOTrayApp.exe` лежит файл `open.mp3`, приложение проигрывает его при открытии главного окна.
+
 ## CI
 
 GitHub Actions workflow `.github/workflows/windows-build.yml` собирает проект на `windows-latest` и публикует `ZIOVPOTrayApp.exe` и `ZIOVPOService.exe` как артефакты сборки.
