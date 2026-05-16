@@ -81,7 +81,7 @@ bool EnsureServiceContextOrStartAndExit() {
         return false;
     }
 
-    SC_HANDLE service = OpenServiceW(manager, kServiceName, SERVICE_QUERY_STATUS | SERVICE_START);
+    SC_HANDLE service = OpenServiceW(manager, kServiceName, SERVICE_QUERY_STATUS);
     if (!service) {
         CloseServiceHandle(manager);
         return false;
@@ -95,8 +95,12 @@ bool EnsureServiceContextOrStartAndExit() {
     }
 
     if (status.dwCurrentState == SERVICE_STOPPED) {
-        StartServiceW(service, 0, nullptr);
-        WaitForServiceRunning(service);
+        CloseServiceHandle(service);
+        service = OpenServiceW(manager, kServiceName, SERVICE_QUERY_STATUS | SERVICE_START);
+        if (service) {
+            StartServiceW(service, 0, nullptr);
+            WaitForServiceRunning(service);
+        }
         CloseServiceHandle(service);
         CloseServiceHandle(manager);
         return false;
