@@ -88,5 +88,6 @@ target_link_libraries(ZIOVPOService PRIVATE
     advapi32
     rpcrt4
     userenv
+    winhttp
     wtsapi32
 )
