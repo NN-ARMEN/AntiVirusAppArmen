@@ -84,6 +84,8 @@ target_include_directories(ZIOVPOService PRIVATE
 target_link_libraries(ZIOVPOTrayApp PRIVATE
     user32
     shell32
+    comdlg32
+    ole32
     gdi32
     advapi32
     rpcrt4
@@ -96,6 +98,7 @@ target_link_libraries(ZIOVPOService PRIVATE
     userenv
     winhttp
     wtsapi32
+    bcrypt
 )
 
 target_link_libraries(ZIOVPOMockLicenseServer PRIVATE

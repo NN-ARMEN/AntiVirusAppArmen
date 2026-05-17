@@ -2,6 +2,8 @@
 #include <shellapi.h>
 #include <tlhelp32.h>
 #include <winsvc.h>
+#include <commdlg.h>
+#include <shlobj.h>
 
 #include <string>
 
@@ -15,6 +17,12 @@ long RpcLogout();
 long RpcGetLicenseStatus(bool& hasLicense, std::wstring& expiresAt, std::wstring& error);
 long RpcActivateProduct(const std::wstring& code, std::wstring& error);
 long RpcAntivirusPing(std::wstring& error);
+long RpcGetAvDatabaseInfo(std::wstring& releaseDate, long& recordCount, std::wstring& error);
+long RpcScanFile(const std::wstring& path, std::wstring& resultText, std::wstring& error);
+long RpcScanDirectory(const std::wstring& path, std::wstring& resultText, std::wstring& error);
+long RpcScanFixedDrives(std::wstring& resultText, std::wstring& error);
+long RpcConfigureScheduleScan(long intervalMinutes, const std::wstring& path, std::wstring& error);
+long RpcConfigureDirectoryMonitoring(const std::wstring& path, std::wstring& error);
 
 namespace {
 
@@ -33,6 +41,14 @@ constexpr int kLogoutButtonId = 60004;
 constexpr int kActivationEditId = 60005;
 constexpr int kActivationButtonId = 60006;
 constexpr int kAvPingButtonId = 60007;
+constexpr int kScanPathEditId = 60008;
+constexpr int kBrowseFileButtonId = 60009;
+constexpr int kBrowseFolderButtonId = 60010;
+constexpr int kScanFileButtonId = 60011;
+constexpr int kScanFolderButtonId = 60012;
+constexpr int kScanDrivesButtonId = 60013;
+constexpr int kScheduleButtonId = 60014;
+constexpr int kMonitorButtonId = 60015;
 
 HINSTANCE g_instance = nullptr;
 HWND g_main_window = nullptr;
@@ -51,6 +67,16 @@ HWND g_activation_edit = nullptr;
 HWND g_activation_button = nullptr;
 HWND g_av_status_label = nullptr;
 HWND g_av_ping_button = nullptr;
+HWND g_av_database_label = nullptr;
+HWND g_scan_path_edit = nullptr;
+HWND g_browse_file_button = nullptr;
+HWND g_browse_folder_button = nullptr;
+HWND g_scan_file_button = nullptr;
+HWND g_scan_folder_button = nullptr;
+HWND g_scan_drives_button = nullptr;
+HWND g_schedule_button = nullptr;
+HWND g_monitor_button = nullptr;
+HWND g_scan_result_label = nullptr;
 bool g_authenticated = false;
 bool g_has_license = false;
 
@@ -125,6 +151,15 @@ void RefreshApplicationState() {
     } else {
         SetText(g_status_label, L"Пользователь: " + login);
         if (g_has_license) {
+            std::wstring dbDate;
+            std::wstring dbError;
+            long dbCount = 0;
+            long dbResult = RpcGetAvDatabaseInfo(dbDate, dbCount, dbError);
+            if (dbResult == 0) {
+                SetText(g_av_database_label, L"AV database: " + dbDate + L", records: " + std::to_wstring(dbCount));
+            } else {
+                SetText(g_av_database_label, L"AV database unavailable: " + (dbError.empty() ? std::to_wstring(dbResult) : dbError));
+            }
             SetText(g_license_label, L"Лицензия активна до: " + (expiresAt.empty() ? L"не указано" : expiresAt));
             SetText(g_av_status_label, L"Функциональность антивируса разблокирована");
         } else {
@@ -145,6 +180,16 @@ void RefreshApplicationState() {
     SetVisible(g_activation_button, g_authenticated && !g_has_license);
     SetVisible(g_av_status_label, g_authenticated);
     SetVisible(g_av_ping_button, g_authenticated && g_has_license);
+    SetVisible(g_av_database_label, g_authenticated);
+    SetVisible(g_scan_path_edit, g_authenticated && g_has_license);
+    SetVisible(g_browse_file_button, g_authenticated && g_has_license);
+    SetVisible(g_browse_folder_button, g_authenticated && g_has_license);
+    SetVisible(g_scan_file_button, g_authenticated && g_has_license);
+    SetVisible(g_scan_folder_button, g_authenticated && g_has_license);
+    SetVisible(g_scan_drives_button, g_authenticated && g_has_license);
+    SetVisible(g_schedule_button, g_authenticated && g_has_license);
+    SetVisible(g_monitor_button, g_authenticated && g_has_license);
+    SetVisible(g_scan_result_label, g_authenticated && g_has_license);
 }
 
 void HandleLogin() {
@@ -184,6 +229,78 @@ void HandleAvPing() {
     } else {
         SetText(g_av_status_label, L"Антивирус заблокирован: " + (error.empty() ? std::to_wstring(result) : error));
     }
+}
+
+void SetScanResult(long result, const std::wstring& resultText, const std::wstring& error) {
+    if (result == 0) {
+        SetText(g_scan_result_label, resultText.empty() ? L"Scan completed" : resultText);
+    } else {
+        SetText(g_scan_result_label, L"Scan error: " + (error.empty() ? std::to_wstring(result) : error));
+    }
+}
+
+void HandleBrowseFile() {
+    wchar_t path[MAX_PATH]{};
+    OPENFILENAMEW dialog{};
+    dialog.lStructSize = sizeof(dialog);
+    dialog.hwndOwner = g_main_window;
+    dialog.lpstrFile = path;
+    dialog.nMaxFile = static_cast<DWORD>(_countof(path));
+    dialog.lpstrTitle = L"Select file to scan";
+    dialog.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST;
+    if (GetOpenFileNameW(&dialog)) {
+        SetWindowTextW(g_scan_path_edit, path);
+    }
+}
+
+void HandleBrowseFolder() {
+    BROWSEINFOW browse{};
+    browse.hwndOwner = g_main_window;
+    browse.lpszTitle = L"Select folder to scan";
+    browse.ulFlags = BIF_RETURNONLYFSDIRS | BIF_NEWDIALOGSTYLE;
+    PIDLIST_ABSOLUTE item = SHBrowseForFolderW(&browse);
+    if (!item) {
+        return;
+    }
+
+    wchar_t path[MAX_PATH]{};
+    if (SHGetPathFromIDListW(item, path)) {
+        SetWindowTextW(g_scan_path_edit, path);
+    }
+    CoTaskMemFree(item);
+}
+
+void HandleScanFile() {
+    std::wstring resultText;
+    std::wstring error;
+    long result = RpcScanFile(GetWindowTextValue(g_scan_path_edit), resultText, error);
+    SetScanResult(result, resultText, error);
+}
+
+void HandleScanFolder() {
+    std::wstring resultText;
+    std::wstring error;
+    long result = RpcScanDirectory(GetWindowTextValue(g_scan_path_edit), resultText, error);
+    SetScanResult(result, resultText, error);
+}
+
+void HandleScanDrives() {
+    std::wstring resultText;
+    std::wstring error;
+    long result = RpcScanFixedDrives(resultText, error);
+    SetScanResult(result, resultText, error);
+}
+
+void HandleScheduleScan() {
+    std::wstring error;
+    long result = RpcConfigureScheduleScan(1, GetWindowTextValue(g_scan_path_edit), error);
+    SetScanResult(result, L"Scheduled scan configured: every 1 minute", error);
+}
+
+void HandleMonitorFolder() {
+    std::wstring error;
+    long result = RpcConfigureDirectoryMonitoring(GetWindowTextValue(g_scan_path_edit), error);
+    SetScanResult(result, L"Directory monitoring configured", error);
 }
 
 DWORD GetParentProcessId() {
@@ -406,6 +523,16 @@ void AddMainWindowControls(HWND hwnd) {
 
     g_av_status_label = CreateWindowExW(0, L"STATIC", L"Антивирус", WS_CHILD | WS_VISIBLE, 20, 218, 560, 24, hwnd, nullptr, g_instance, nullptr);
     g_av_ping_button = CreateWindowExW(0, L"BUTTON", L"Проверить AV", WS_CHILD | WS_VISIBLE | WS_TABSTOP, 20, 250, 140, 30, hwnd, reinterpret_cast<HMENU>(kAvPingButtonId), g_instance, nullptr);
+    g_av_database_label = CreateWindowExW(0, L"STATIC", L"AV database", WS_CHILD | WS_VISIBLE, 20, 292, 600, 24, hwnd, nullptr, g_instance, nullptr);
+    g_scan_path_edit = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", L"", WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_AUTOHSCROLL, 20, 326, 420, 26, hwnd, reinterpret_cast<HMENU>(kScanPathEditId), g_instance, nullptr);
+    g_browse_file_button = CreateWindowExW(0, L"BUTTON", L"File...", WS_CHILD | WS_VISIBLE | WS_TABSTOP, 450, 324, 70, 30, hwnd, reinterpret_cast<HMENU>(kBrowseFileButtonId), g_instance, nullptr);
+    g_browse_folder_button = CreateWindowExW(0, L"BUTTON", L"Folder...", WS_CHILD | WS_VISIBLE | WS_TABSTOP, 530, 324, 80, 30, hwnd, reinterpret_cast<HMENU>(kBrowseFolderButtonId), g_instance, nullptr);
+    g_scan_file_button = CreateWindowExW(0, L"BUTTON", L"Scan file", WS_CHILD | WS_VISIBLE | WS_TABSTOP, 20, 366, 90, 30, hwnd, reinterpret_cast<HMENU>(kScanFileButtonId), g_instance, nullptr);
+    g_scan_folder_button = CreateWindowExW(0, L"BUTTON", L"Scan folder", WS_CHILD | WS_VISIBLE | WS_TABSTOP, 120, 366, 100, 30, hwnd, reinterpret_cast<HMENU>(kScanFolderButtonId), g_instance, nullptr);
+    g_scan_drives_button = CreateWindowExW(0, L"BUTTON", L"Scan drives", WS_CHILD | WS_VISIBLE | WS_TABSTOP, 230, 366, 100, 30, hwnd, reinterpret_cast<HMENU>(kScanDrivesButtonId), g_instance, nullptr);
+    g_schedule_button = CreateWindowExW(0, L"BUTTON", L"Schedule", WS_CHILD | WS_VISIBLE | WS_TABSTOP, 340, 366, 90, 30, hwnd, reinterpret_cast<HMENU>(kScheduleButtonId), g_instance, nullptr);
+    g_monitor_button = CreateWindowExW(0, L"BUTTON", L"Monitor", WS_CHILD | WS_VISIBLE | WS_TABSTOP, 440, 366, 90, 30, hwnd, reinterpret_cast<HMENU>(kMonitorButtonId), g_instance, nullptr);
+    g_scan_result_label = CreateWindowExW(0, L"STATIC", L"Scan result", WS_CHILD | WS_VISIBLE, 20, 410, 600, 90, hwnd, nullptr, g_instance, nullptr);
 }
 
 LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam) {
@@ -447,6 +574,27 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lpara
             return 0;
         case kAvPingButtonId:
             HandleAvPing();
+            return 0;
+        case kBrowseFileButtonId:
+            HandleBrowseFile();
+            return 0;
+        case kBrowseFolderButtonId:
+            HandleBrowseFolder();
+            return 0;
+        case kScanFileButtonId:
+            HandleScanFile();
+            return 0;
+        case kScanFolderButtonId:
+            HandleScanFolder();
+            return 0;
+        case kScanDrivesButtonId:
+            HandleScanDrives();
+            return 0;
+        case kScheduleButtonId:
+            HandleScheduleScan();
+            return 0;
+        case kMonitorButtonId:
+            HandleMonitorFolder();
             return 0;
         default:
             return 0;
@@ -522,8 +670,8 @@ HWND CreateMainWindow() {
         WS_OVERLAPPEDWINDOW,
         CW_USEDEFAULT,
         CW_USEDEFAULT,
-        620,
-        360,
+        680,
+        560,
         nullptr,
         nullptr,
         g_instance,
@@ -549,6 +697,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR command_line, int show
     }
 
     g_instance = instance;
+    CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
     g_taskbar_created_message = RegisterWindowMessage(L"TaskbarCreated");
 
     if (!RegisterMainWindowClass()) {
@@ -577,5 +726,6 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR command_line, int show
     }
 
     CloseHandle(single_instance_mutex);
+    CoUninitialize();
     return static_cast<int>(message.wParam);
 }

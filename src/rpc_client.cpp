@@ -199,6 +199,166 @@ long RpcAntivirusPing(std::wstring& error) {
     return result;
 }
 
+long RpcGetAvDatabaseInfo(std::wstring& releaseDate, long& recordCount, std::wstring& error) {
+    if (!EnsureBinding()) {
+        return RPC_S_SERVER_UNAVAILABLE;
+    }
+
+    wchar_t* dateBuffer = nullptr;
+    wchar_t* errorBuffer = nullptr;
+    long count = 0;
+    long result = 0;
+    RpcTryExcept {
+        result = GetAvDatabaseInfo(&dateBuffer, &count, &errorBuffer);
+    }
+    RpcExcept(1) {
+        result = static_cast<long>(RpcExceptionCode());
+        DropBinding();
+    }
+    RpcEndExcept
+
+    releaseDate = dateBuffer ? dateBuffer : L"";
+    recordCount = count;
+    error = errorBuffer ? errorBuffer : L"";
+    if (dateBuffer) {
+        midl_user_free(dateBuffer);
+    }
+    if (errorBuffer) {
+        midl_user_free(errorBuffer);
+    }
+    return result;
+}
+
+long RpcScanFile(const std::wstring& path, std::wstring& resultText, std::wstring& error) {
+    if (!EnsureBinding()) {
+        return RPC_S_SERVER_UNAVAILABLE;
+    }
+
+    wchar_t* resultBuffer = nullptr;
+    wchar_t* errorBuffer = nullptr;
+    long result = 0;
+    RpcTryExcept {
+        result = ScanFile(path.c_str(), &resultBuffer, &errorBuffer);
+    }
+    RpcExcept(1) {
+        result = static_cast<long>(RpcExceptionCode());
+        DropBinding();
+    }
+    RpcEndExcept
+
+    resultText = resultBuffer ? resultBuffer : L"";
+    error = errorBuffer ? errorBuffer : L"";
+    if (resultBuffer) {
+        midl_user_free(resultBuffer);
+    }
+    if (errorBuffer) {
+        midl_user_free(errorBuffer);
+    }
+    return result;
+}
+
+long RpcScanDirectory(const std::wstring& path, std::wstring& resultText, std::wstring& error) {
+    if (!EnsureBinding()) {
+        return RPC_S_SERVER_UNAVAILABLE;
+    }
+
+    wchar_t* resultBuffer = nullptr;
+    wchar_t* errorBuffer = nullptr;
+    long result = 0;
+    RpcTryExcept {
+        result = ScanDirectory(path.c_str(), &resultBuffer, &errorBuffer);
+    }
+    RpcExcept(1) {
+        result = static_cast<long>(RpcExceptionCode());
+        DropBinding();
+    }
+    RpcEndExcept
+
+    resultText = resultBuffer ? resultBuffer : L"";
+    error = errorBuffer ? errorBuffer : L"";
+    if (resultBuffer) {
+        midl_user_free(resultBuffer);
+    }
+    if (errorBuffer) {
+        midl_user_free(errorBuffer);
+    }
+    return result;
+}
+
+long RpcScanFixedDrives(std::wstring& resultText, std::wstring& error) {
+    if (!EnsureBinding()) {
+        return RPC_S_SERVER_UNAVAILABLE;
+    }
+
+    wchar_t* resultBuffer = nullptr;
+    wchar_t* errorBuffer = nullptr;
+    long result = 0;
+    RpcTryExcept {
+        result = ScanFixedDrives(&resultBuffer, &errorBuffer);
+    }
+    RpcExcept(1) {
+        result = static_cast<long>(RpcExceptionCode());
+        DropBinding();
+    }
+    RpcEndExcept
+
+    resultText = resultBuffer ? resultBuffer : L"";
+    error = errorBuffer ? errorBuffer : L"";
+    if (resultBuffer) {
+        midl_user_free(resultBuffer);
+    }
+    if (errorBuffer) {
+        midl_user_free(errorBuffer);
+    }
+    return result;
+}
+
+long RpcConfigureScheduleScan(long intervalMinutes, const std::wstring& path, std::wstring& error) {
+    if (!EnsureBinding()) {
+        return RPC_S_SERVER_UNAVAILABLE;
+    }
+
+    wchar_t* errorBuffer = nullptr;
+    long result = 0;
+    RpcTryExcept {
+        result = ConfigureScheduleScan(intervalMinutes, path.c_str(), &errorBuffer);
+    }
+    RpcExcept(1) {
+        result = static_cast<long>(RpcExceptionCode());
+        DropBinding();
+    }
+    RpcEndExcept
+
+    error = errorBuffer ? errorBuffer : L"";
+    if (errorBuffer) {
+        midl_user_free(errorBuffer);
+    }
+    return result;
+}
+
+long RpcConfigureDirectoryMonitoring(const std::wstring& path, std::wstring& error) {
+    if (!EnsureBinding()) {
+        return RPC_S_SERVER_UNAVAILABLE;
+    }
+
+    wchar_t* errorBuffer = nullptr;
+    long result = 0;
+    RpcTryExcept {
+        result = ConfigureDirectoryMonitoring(path.c_str(), &errorBuffer);
+    }
+    RpcExcept(1) {
+        result = static_cast<long>(RpcExceptionCode());
+        DropBinding();
+    }
+    RpcEndExcept
+
+    error = errorBuffer ? errorBuffer : L"";
+    if (errorBuffer) {
+        midl_user_free(errorBuffer);
+    }
+    return result;
+}
+
 extern "C" void* __RPC_USER midl_user_allocate(size_t size) {
     return malloc(size);
 }

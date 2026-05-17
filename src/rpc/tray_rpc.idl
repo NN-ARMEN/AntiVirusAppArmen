@@ -17,4 +17,20 @@ interface ZIOVPOControl
     long ActivateProduct([in, string] const wchar_t* activationCode,
                          [out, string] wchar_t** errorMessage);
     long AntivirusPing([out, string] wchar_t** errorMessage);
+    long GetAvDatabaseInfo([out, string] wchar_t** releaseDate,
+                           [out] long* recordCount,
+                           [out, string] wchar_t** errorMessage);
+    long ScanFile([in, string] const wchar_t* path,
+                  [out, string] wchar_t** result,
+                  [out, string] wchar_t** errorMessage);
+    long ScanDirectory([in, string] const wchar_t* path,
+                       [out, string] wchar_t** result,
+                       [out, string] wchar_t** errorMessage);
+    long ScanFixedDrives([out, string] wchar_t** result,
+                         [out, string] wchar_t** errorMessage);
+    long ConfigureScheduleScan([in] long intervalMinutes,
+                               [in, string] const wchar_t* path,
+                               [out, string] wchar_t** errorMessage);
+    long ConfigureDirectoryMonitoring([in, string] const wchar_t* path,
+                                      [out, string] wchar_t** errorMessage);
 }

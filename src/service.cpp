@@ -7,13 +7,18 @@
 #include <rpc.h>
 
 #include <algorithm>
+#include <array>
+#include <cstdint>
 #include <malloc.h>
 #include <fstream>
 #include <chrono>
 #include <cwctype>
+#include <map>
+#include <sstream>
 #include <string>
 #include <thread>
 #include <vector>
+#include <bcrypt.h>
 
 #include "shared.h"
 
@@ -31,6 +36,11 @@ CRITICAL_SECTION g_process_lock;
 CRITICAL_SECTION g_auth_lock;
 std::vector<PROCESS_INFORMATION> g_tray_processes;
 HANDLE g_refresh_thread = nullptr;
+HANDLE g_schedule_thread = nullptr;
+HANDLE g_monitor_thread = nullptr;
+HANDLE g_monitor_stop_event = nullptr;
+CRITICAL_SECTION g_av_lock;
+CRITICAL_SECTION g_schedule_lock;
 
 struct AuthState {
     bool authenticated = false;
@@ -46,6 +56,41 @@ struct AuthState {
 };
 
 AuthState g_auth;
+
+enum class ObjectType : unsigned char {
+    PeFile = 1,
+    Script = 2
+};
+
+struct AvRecord {
+    uint64_t prefix = 0;
+    uint32_t length = 0;
+    std::array<unsigned char, 32> signature_hash{};
+    uint64_t offset_begin = 0;
+    uint64_t offset_end = 0;
+    ObjectType object_type = ObjectType::PeFile;
+    std::array<unsigned char, 32> record_signature{};
+    std::wstring name;
+};
+
+struct AvDatabase {
+    bool loaded = false;
+    std::wstring release_date;
+    std::map<uint64_t, std::vector<AvRecord>> records;
+};
+
+struct ScheduleState {
+    bool enabled = false;
+    long interval_minutes = 0;
+    std::wstring path;
+    ULONGLONG next_scan_tick = 0;
+    std::wstring last_result;
+};
+
+AvDatabase g_av_database;
+ScheduleState g_schedule;
+std::wstring g_monitor_path;
+std::wstring g_monitor_last_result;
 
 std::wstring GetCurrentDirectoryForModule();
 
@@ -238,6 +283,404 @@ long ExtractJsonLong(const std::wstring& json, const std::wstring& key, long fal
 ULONGLONG DelayFromSeconds(long seconds, long fallbackSeconds) {
     long effective = seconds > 30 ? seconds - 30 : fallbackSeconds;
     return GetTickCount64() + static_cast<ULONGLONG>(effective) * 1000ULL;
+}
+
+std::vector<unsigned char> ToBytes(const char* text) {
+    std::vector<unsigned char> bytes;
+    while (*text) {
+        bytes.push_back(static_cast<unsigned char>(*text));
+        ++text;
+    }
+    return bytes;
+}
+
+uint64_t ReadPrefix(const unsigned char* bytes) {
+    uint64_t value = 0;
+    for (int i = 0; i < 8; ++i) {
+        value |= static_cast<uint64_t>(bytes[i]) << (i * 8);
+    }
+    return value;
+}
+
+std::array<unsigned char, 32> Sha256(const std::vector<unsigned char>& bytes) {
+    std::array<unsigned char, 32> hash{};
+    BCRYPT_ALG_HANDLE algorithm = nullptr;
+    BCRYPT_HASH_HANDLE hash_handle = nullptr;
+
+    if (BCryptOpenAlgorithmProvider(&algorithm, BCRYPT_SHA256_ALGORITHM, nullptr, 0) != 0) {
+        return hash;
+    }
+    if (BCryptCreateHash(algorithm, &hash_handle, nullptr, 0, nullptr, 0, 0) == 0) {
+        BCryptHashData(hash_handle, const_cast<PUCHAR>(bytes.data()), static_cast<ULONG>(bytes.size()), 0);
+        BCryptFinishHash(hash_handle, hash.data(), static_cast<ULONG>(hash.size()), 0);
+        BCryptDestroyHash(hash_handle);
+    }
+    BCryptCloseAlgorithmProvider(algorithm, 0);
+    return hash;
+}
+
+void AppendUint64(std::vector<unsigned char>& bytes, uint64_t value) {
+    for (int i = 0; i < 8; ++i) {
+        bytes.push_back(static_cast<unsigned char>((value >> (i * 8)) & 0xff));
+    }
+}
+
+void AppendUint32(std::vector<unsigned char>& bytes, uint32_t value) {
+    for (int i = 0; i < 4; ++i) {
+        bytes.push_back(static_cast<unsigned char>((value >> (i * 8)) & 0xff));
+    }
+}
+
+std::array<unsigned char, 32> MakeRecordSignature(const AvRecord& record) {
+    std::vector<unsigned char> bytes;
+    AppendUint64(bytes, record.prefix);
+    AppendUint32(bytes, record.length);
+    bytes.insert(bytes.end(), record.signature_hash.begin(), record.signature_hash.end());
+    AppendUint64(bytes, record.offset_begin);
+    AppendUint64(bytes, record.offset_end);
+    bytes.push_back(static_cast<unsigned char>(record.object_type));
+    return Sha256(bytes);
+}
+
+AvRecord MakeAvRecord(const char* signature, ObjectType object_type, uint64_t offset_begin, uint64_t offset_end, const std::wstring& name) {
+    std::vector<unsigned char> signature_bytes = ToBytes(signature);
+    AvRecord record;
+    record.prefix = ReadPrefix(signature_bytes.data());
+    record.length = static_cast<uint32_t>(signature_bytes.size());
+    record.signature_hash = Sha256(signature_bytes);
+    record.offset_begin = offset_begin;
+    record.offset_end = offset_end;
+    record.object_type = object_type;
+    record.name = name;
+    record.record_signature = MakeRecordSignature(record);
+    return record;
+}
+
+void AddAvRecord(const AvRecord& record) {
+    g_av_database.records[record.prefix].push_back(record);
+}
+
+void LoadAvDatabaseIfNeeded() {
+    EnterCriticalSection(&g_av_lock);
+    if (!g_av_database.loaded) {
+        g_av_database.release_date = L"2026-05-17";
+        g_av_database.records.clear();
+        AddAvRecord(MakeAvRecord("EICAR-ZIOVPO-PE", ObjectType::PeFile, 0, 1024 * 1024, L"Demo.PE.EicarZIOVPO"));
+        AddAvRecord(MakeAvRecord("ZIOVPO-SCRIPT-MALWARE", ObjectType::Script, 0, 1024 * 1024, L"Demo.Script.ZIOVPO"));
+        g_av_database.loaded = true;
+        WriteLog(L"AV database loaded, records=" + std::to_wstring(g_av_database.records.size()));
+    }
+    LeaveCriticalSection(&g_av_lock);
+}
+
+size_t GetAvRecordCountUnlocked() {
+    size_t count = 0;
+    for (const auto& [prefix, records] : g_av_database.records) {
+        UNREFERENCED_PARAMETER(prefix);
+        count += records.size();
+    }
+    return count;
+}
+
+bool HasLicenseTicket() {
+    bool hasLicense = false;
+    EnterCriticalSection(&g_auth_lock);
+    hasLicense = g_auth.hasLicense;
+    LeaveCriticalSection(&g_auth_lock);
+    return hasLicense;
+}
+
+ObjectType DetectObjectType(const std::wstring& path, const std::vector<unsigned char>& bytes) {
+    if (bytes.size() >= 2 && bytes[0] == 'M' && bytes[1] == 'Z') {
+        return ObjectType::PeFile;
+    }
+
+    const size_t dot = path.find_last_of(L'.');
+    std::wstring extension = dot == std::wstring::npos ? L"" : path.substr(dot);
+    std::transform(extension.begin(), extension.end(), extension.begin(), [](wchar_t ch) {
+        return static_cast<wchar_t>(towlower(ch));
+    });
+    if (extension == L".ps1" || extension == L".js" || extension == L".py" || extension == L".bat" || extension == L".cmd" || extension == L".txt") {
+        return ObjectType::Script;
+    }
+
+    return ObjectType::PeFile;
+}
+
+bool ReadFileBytes(const std::wstring& path, std::vector<unsigned char>& bytes, std::wstring& error) {
+    bytes.clear();
+    HANDLE file = CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (file == INVALID_HANDLE_VALUE) {
+        error = L"Cannot open file, error=" + std::to_wstring(GetLastError());
+        return false;
+    }
+
+    LARGE_INTEGER size{};
+    if (!GetFileSizeEx(file, &size) || size.QuadPart < 0 || size.QuadPart > 64LL * 1024LL * 1024LL) {
+        CloseHandle(file);
+        error = L"File is too large for demo scanner";
+        return false;
+    }
+
+    bytes.resize(static_cast<size_t>(size.QuadPart));
+    DWORD read = 0;
+    BOOL ok = bytes.empty() || ReadFile(file, bytes.data(), static_cast<DWORD>(bytes.size()), &read, nullptr);
+    CloseHandle(file);
+    if (!ok) {
+        error = L"Cannot read file, error=" + std::to_wstring(GetLastError());
+        return false;
+    }
+    bytes.resize(read);
+    return true;
+}
+
+bool ScanBytes(const std::wstring& path, const std::vector<unsigned char>& bytes, std::wstring& detection) {
+    detection.clear();
+    if (bytes.size() < 8) {
+        return false;
+    }
+
+    ObjectType object_type = DetectObjectType(path, bytes);
+    for (size_t position = 0; position + 8 <= bytes.size(); ++position) {
+        uint64_t prefix = ReadPrefix(bytes.data() + position);
+
+        EnterCriticalSection(&g_av_lock);
+        auto it = g_av_database.records.find(prefix);
+        std::vector<AvRecord> candidates = it == g_av_database.records.end() ? std::vector<AvRecord>{} : it->second;
+        LeaveCriticalSection(&g_av_lock);
+
+        if (candidates.empty()) {
+            continue;
+        }
+
+        for (const AvRecord& record : candidates) {
+            if (record.object_type != object_type) {
+                continue;
+            }
+            if (position < record.offset_begin || position > record.offset_end) {
+                continue;
+            }
+            if (position + record.length > bytes.size()) {
+                continue;
+            }
+
+            std::vector<unsigned char> signature(bytes.begin() + position, bytes.begin() + position + record.length);
+            if (Sha256(signature) == record.signature_hash) {
+                detection = record.name;
+                return true;
+            }
+        }
+    }
+
+    return false;
+}
+
+long EnsureAvReady(std::wstring& error) {
+    if (!HasLicenseTicket()) {
+        error = L"License ticket is missing";
+        return ERROR_NOT_READY;
+    }
+    LoadAvDatabaseIfNeeded();
+    return 0;
+}
+
+long ScanSingleFile(const std::wstring& path, bool& infected, std::wstring& detection, std::wstring& error) {
+    infected = false;
+    detection.clear();
+    long ready = EnsureAvReady(error);
+    if (ready != 0) {
+        return ready;
+    }
+
+    std::vector<unsigned char> bytes;
+    if (!ReadFileBytes(path, bytes, error)) {
+        return ERROR_OPEN_FAILED;
+    }
+
+    infected = ScanBytes(path, bytes, detection);
+    return 0;
+}
+
+void AppendScanLine(std::wstringstream& report, const std::wstring& path, bool infected, const std::wstring& detection) {
+    report << (infected ? L"[INFECTED] " : L"[CLEAN] ") << path;
+    if (infected) {
+        report << L" (" << detection << L")";
+    }
+    report << L"\r\n";
+}
+
+void ScanDirectoryRecursive(const std::wstring& path, std::wstringstream& report, long& scanned, long& infectedCount) {
+    std::wstring mask = path + L"\\*";
+    WIN32_FIND_DATAW data{};
+    HANDLE find = FindFirstFileW(mask.c_str(), &data);
+    if (find == INVALID_HANDLE_VALUE) {
+        return;
+    }
+
+    do {
+        if (wcscmp(data.cFileName, L".") == 0 || wcscmp(data.cFileName, L"..") == 0) {
+            continue;
+        }
+        std::wstring child = path + L"\\" + data.cFileName;
+        if (data.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) {
+            ScanDirectoryRecursive(child, report, scanned, infectedCount);
+            continue;
+        }
+
+        bool infected = false;
+        std::wstring detection;
+        std::wstring error;
+        if (ScanSingleFile(child, infected, detection, error) == 0) {
+            ++scanned;
+            if (infected) {
+                ++infectedCount;
+                AppendScanLine(report, child, true, detection);
+            }
+        }
+    } while (FindNextFileW(find, &data));
+
+    FindClose(find);
+}
+
+long ScanPathDirectory(const std::wstring& path, std::wstring& result, std::wstring& error) {
+    long ready = EnsureAvReady(error);
+    if (ready != 0) {
+        return ready;
+    }
+
+    long scanned = 0;
+    long infected = 0;
+    std::wstringstream report;
+    ScanDirectoryRecursive(path, report, scanned, infected);
+    result = L"Scanned files: " + std::to_wstring(scanned) + L", infected: " + std::to_wstring(infected) + L"\r\n" + report.str();
+    error.clear();
+    return 0;
+}
+
+long ScanAllFixedDrivesInternal(std::wstring& result, std::wstring& error) {
+    long ready = EnsureAvReady(error);
+    if (ready != 0) {
+        return ready;
+    }
+
+    wchar_t drives[512]{};
+    DWORD length = GetLogicalDriveStringsW(static_cast<DWORD>(_countof(drives)), drives);
+    if (length == 0 || length > _countof(drives)) {
+        error = L"Cannot enumerate drives";
+        return ERROR_NOT_READY;
+    }
+
+    long totalScanned = 0;
+    long totalInfected = 0;
+    std::wstringstream report;
+    for (wchar_t* drive = drives; *drive; drive += wcslen(drive) + 1) {
+        if (GetDriveTypeW(drive) != DRIVE_FIXED) {
+            continue;
+        }
+
+        long scanned = 0;
+        long infected = 0;
+        report << L"Drive " << drive << L"\r\n";
+        ScanDirectoryRecursive(drive, report, scanned, infected);
+        totalScanned += scanned;
+        totalInfected += infected;
+    }
+
+    result = L"Fixed drives scanned files: " + std::to_wstring(totalScanned) + L", infected: " + std::to_wstring(totalInfected) + L"\r\n" + report.str();
+    error.clear();
+    return 0;
+}
+
+DWORD WINAPI ScheduleThreadProc(void*) {
+    while (WaitForSingleObject(g_stop_event, 1000) == WAIT_TIMEOUT) {
+        bool shouldScan = false;
+        std::wstring path;
+
+        EnterCriticalSection(&g_schedule_lock);
+        if (g_schedule.enabled && g_schedule.next_scan_tick != 0 && GetTickCount64() >= g_schedule.next_scan_tick) {
+            shouldScan = true;
+            path = g_schedule.path;
+            g_schedule.next_scan_tick = GetTickCount64() + static_cast<ULONGLONG>(g_schedule.interval_minutes) * 60ULL * 1000ULL;
+        }
+        LeaveCriticalSection(&g_schedule_lock);
+
+        if (shouldScan) {
+            std::wstring result;
+            std::wstring error;
+            DWORD attributes = GetFileAttributesW(path.c_str());
+            long code = ERROR_INVALID_PARAMETER;
+            if (attributes != INVALID_FILE_ATTRIBUTES && (attributes & FILE_ATTRIBUTE_DIRECTORY)) {
+                code = ScanPathDirectory(path, result, error);
+            } else if (attributes != INVALID_FILE_ATTRIBUTES) {
+                bool infected = false;
+                std::wstring detection;
+                code = ScanSingleFile(path, infected, detection, error);
+                result = infected
+                    ? L"Scheduled scan detected malware: " + detection
+                    : L"Scheduled scan completed: file is clean";
+            }
+            if (code != 0) {
+                result = L"Scheduled scan failed: " + error;
+            }
+
+            EnterCriticalSection(&g_schedule_lock);
+            g_schedule.last_result = result;
+            LeaveCriticalSection(&g_schedule_lock);
+        }
+    }
+    return 0;
+}
+
+DWORD WINAPI MonitorThreadProc(void*) {
+    while (WaitForSingleObject(g_monitor_stop_event, 1000) == WAIT_TIMEOUT) {
+        std::wstring path;
+        EnterCriticalSection(&g_schedule_lock);
+        path = g_monitor_path;
+        LeaveCriticalSection(&g_schedule_lock);
+        if (path.empty()) {
+            continue;
+        }
+
+        HANDLE directory = CreateFileW(
+            path.c_str(),
+            FILE_LIST_DIRECTORY,
+            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+            nullptr,
+            OPEN_EXISTING,
+            FILE_FLAG_BACKUP_SEMANTICS,
+            nullptr
+        );
+        if (directory == INVALID_HANDLE_VALUE) {
+            Sleep(3000);
+            continue;
+        }
+
+        unsigned char buffer[4096]{};
+        DWORD bytes_returned = 0;
+        BOOL ok = ReadDirectoryChangesW(
+            directory,
+            buffer,
+            sizeof(buffer),
+            TRUE,
+            FILE_NOTIFY_CHANGE_FILE_NAME | FILE_NOTIFY_CHANGE_LAST_WRITE | FILE_NOTIFY_CHANGE_CREATION,
+            &bytes_returned,
+            nullptr,
+            nullptr
+        );
+        CloseHandle(directory);
+
+        if (!ok || bytes_returned == 0) {
+            continue;
+        }
+
+        std::wstring result;
+        std::wstring error;
+        ScanPathDirectory(path, result, error);
+        EnterCriticalSection(&g_schedule_lock);
+        g_monitor_last_result = error.empty() ? result : L"Monitor scan failed: " + error;
+        LeaveCriticalSection(&g_schedule_lock);
+    }
+    return 0;
 }
 
 bool HttpRequestJson(
@@ -519,6 +962,9 @@ long QueryLicenseStatus(std::wstring& error) {
     g_auth.licenseExpiresAt = expiresAt;
     g_auth.nextLicenseRefreshTick = DelayFromSeconds(ExtractJsonLong(response, L"licenseExpiresIn", 300), 300);
     LeaveCriticalSection(&g_auth_lock);
+    if (hasLicense) {
+        LoadAvDatabaseIfNeeded();
+    }
 
     error.clear();
     return 0;
@@ -558,6 +1004,7 @@ long ActivateLicense(const std::wstring& code, std::wstring& error) {
         g_auth.licenseExpiresAt = kDemoLicenseExpiresAt;
         g_auth.nextLicenseRefreshTick = DelayFromSeconds(120, 120);
         LeaveCriticalSection(&g_auth_lock);
+        LoadAvDatabaseIfNeeded();
         error.clear();
         return 0;
     }
@@ -581,6 +1028,7 @@ long ActivateLicense(const std::wstring& code, std::wstring& error) {
         g_auth.licenseExpiresAt = expiresAt;
         g_auth.nextLicenseRefreshTick = DelayFromSeconds(ExtractJsonLong(response, L"licenseExpiresIn", 300), 300);
         LeaveCriticalSection(&g_auth_lock);
+        LoadAvDatabaseIfNeeded();
         error.clear();
         return 0;
     }
@@ -886,9 +1334,20 @@ void WINAPI ServiceMain(DWORD, LPWSTR*) {
 
     InitializeCriticalSection(&g_process_lock);
     InitializeCriticalSection(&g_auth_lock);
+    InitializeCriticalSection(&g_av_lock);
+    InitializeCriticalSection(&g_schedule_lock);
     g_stop_event = CreateEventW(nullptr, TRUE, FALSE, nullptr);
-    if (!g_stop_event) {
+    g_monitor_stop_event = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+    if (!g_stop_event || !g_monitor_stop_event) {
         SetServiceState(SERVICE_STOPPED, GetLastError());
+        if (g_stop_event) {
+            CloseHandle(g_stop_event);
+        }
+        if (g_monitor_stop_event) {
+            CloseHandle(g_monitor_stop_event);
+        }
+        DeleteCriticalSection(&g_schedule_lock);
+        DeleteCriticalSection(&g_av_lock);
         DeleteCriticalSection(&g_auth_lock);
         DeleteCriticalSection(&g_process_lock);
         return;
@@ -896,14 +1355,22 @@ void WINAPI ServiceMain(DWORD, LPWSTR*) {
 
     HANDLE rpc_thread = CreateThread(nullptr, 0, RpcThreadProc, nullptr, 0, nullptr);
     if (!rpc_thread) {
+        if (g_monitor_stop_event) {
+            CloseHandle(g_monitor_stop_event);
+            g_monitor_stop_event = nullptr;
+        }
         CloseHandle(g_stop_event);
         SetServiceState(SERVICE_STOPPED, GetLastError());
+        DeleteCriticalSection(&g_schedule_lock);
+        DeleteCriticalSection(&g_av_lock);
         DeleteCriticalSection(&g_auth_lock);
         DeleteCriticalSection(&g_process_lock);
         return;
     }
 
     g_refresh_thread = CreateThread(nullptr, 0, RefreshThreadProc, nullptr, 0, nullptr);
+    g_schedule_thread = CreateThread(nullptr, 0, ScheduleThreadProc, nullptr, 0, nullptr);
+    g_monitor_thread = CreateThread(nullptr, 0, MonitorThreadProc, nullptr, 0, nullptr);
 
     SetServiceState(SERVICE_RUNNING);
     WriteLog(L"Service is running");
@@ -922,9 +1389,28 @@ void WINAPI ServiceMain(DWORD, LPWSTR*) {
         CloseHandle(g_refresh_thread);
         g_refresh_thread = nullptr;
     }
+    if (g_monitor_stop_event) {
+        SetEvent(g_monitor_stop_event);
+    }
+    if (g_schedule_thread) {
+        WaitForSingleObject(g_schedule_thread, 3000);
+        CloseHandle(g_schedule_thread);
+        g_schedule_thread = nullptr;
+    }
+    if (g_monitor_thread) {
+        WaitForSingleObject(g_monitor_thread, 3000);
+        CloseHandle(g_monitor_thread);
+        g_monitor_thread = nullptr;
+    }
 
     TerminateTrayProcesses();
+    if (g_monitor_stop_event) {
+        CloseHandle(g_monitor_stop_event);
+        g_monitor_stop_event = nullptr;
+    }
     CloseHandle(g_stop_event);
+    DeleteCriticalSection(&g_schedule_lock);
+    DeleteCriticalSection(&g_av_lock);
     DeleteCriticalSection(&g_auth_lock);
     DeleteCriticalSection(&g_process_lock);
 
@@ -1023,6 +1509,109 @@ extern "C" long AntivirusPing(wchar_t** errorMessage) {
         *errorMessage = RpcCopyString(L"License ticket is missing");
         return ERROR_NOT_READY;
     }
+
+    *errorMessage = RpcCopyString(L"");
+    return *errorMessage ? 0 : ERROR_OUTOFMEMORY;
+}
+
+extern "C" long GetAvDatabaseInfo(wchar_t** releaseDate, long* recordCount, wchar_t** errorMessage) {
+    if (!releaseDate || !recordCount || !errorMessage) {
+        return ERROR_INVALID_PARAMETER;
+    }
+
+    std::wstring error;
+    long ready = EnsureAvReady(error);
+    EnterCriticalSection(&g_av_lock);
+    std::wstring date = g_av_database.release_date;
+    long count = static_cast<long>(GetAvRecordCountUnlocked());
+    LeaveCriticalSection(&g_av_lock);
+
+    *releaseDate = RpcCopyString(date);
+    *recordCount = count;
+    *errorMessage = RpcCopyString(error);
+    if (!*releaseDate || !*errorMessage) {
+        return ERROR_OUTOFMEMORY;
+    }
+    return ready;
+}
+
+extern "C" long ScanFile(const wchar_t* path, wchar_t** result, wchar_t** errorMessage) {
+    if (!path || !result || !errorMessage) {
+        return ERROR_INVALID_PARAMETER;
+    }
+
+    bool infected = false;
+    std::wstring detection;
+    std::wstring error;
+    long code = ScanSingleFile(path, infected, detection, error);
+    std::wstring report;
+    if (code == 0) {
+        report = infected
+            ? L"INFECTED: " + std::wstring(path) + L" (" + detection + L")"
+            : L"CLEAN: " + std::wstring(path);
+    }
+
+    *result = RpcCopyString(report);
+    *errorMessage = RpcCopyString(error);
+    return *result && *errorMessage ? code : ERROR_OUTOFMEMORY;
+}
+
+extern "C" long ScanDirectory(const wchar_t* path, wchar_t** result, wchar_t** errorMessage) {
+    if (!path || !result || !errorMessage) {
+        return ERROR_INVALID_PARAMETER;
+    }
+
+    std::wstring report;
+    std::wstring error;
+    long code = ScanPathDirectory(path, report, error);
+    *result = RpcCopyString(report);
+    *errorMessage = RpcCopyString(error);
+    return *result && *errorMessage ? code : ERROR_OUTOFMEMORY;
+}
+
+extern "C" long ScanFixedDrives(wchar_t** result, wchar_t** errorMessage) {
+    if (!result || !errorMessage) {
+        return ERROR_INVALID_PARAMETER;
+    }
+
+    std::wstring report;
+    std::wstring error;
+    long code = ScanAllFixedDrivesInternal(report, error);
+    *result = RpcCopyString(report);
+    *errorMessage = RpcCopyString(error);
+    return *result && *errorMessage ? code : ERROR_OUTOFMEMORY;
+}
+
+extern "C" long ConfigureScheduleScan(long intervalMinutes, const wchar_t* path, wchar_t** errorMessage) {
+    if (!path || !errorMessage) {
+        return ERROR_INVALID_PARAMETER;
+    }
+    if (intervalMinutes <= 0) {
+        *errorMessage = RpcCopyString(L"Interval must be positive");
+        return ERROR_INVALID_PARAMETER;
+    }
+
+    EnterCriticalSection(&g_schedule_lock);
+    g_schedule.enabled = true;
+    g_schedule.interval_minutes = intervalMinutes;
+    g_schedule.path = path;
+    g_schedule.next_scan_tick = GetTickCount64() + static_cast<ULONGLONG>(intervalMinutes) * 60ULL * 1000ULL;
+    g_schedule.last_result.clear();
+    LeaveCriticalSection(&g_schedule_lock);
+
+    *errorMessage = RpcCopyString(L"");
+    return *errorMessage ? 0 : ERROR_OUTOFMEMORY;
+}
+
+extern "C" long ConfigureDirectoryMonitoring(const wchar_t* path, wchar_t** errorMessage) {
+    if (!path || !errorMessage) {
+        return ERROR_INVALID_PARAMETER;
+    }
+
+    EnterCriticalSection(&g_schedule_lock);
+    g_monitor_path = path;
+    g_monitor_last_result.clear();
+    LeaveCriticalSection(&g_schedule_lock);
 
     *errorMessage = RpcCopyString(L"");
     return *errorMessage ? 0 : ERROR_OUTOFMEMORY;
