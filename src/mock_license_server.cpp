@@ -14,7 +14,15 @@ namespace {
 constexpr unsigned short kPort = 18080;
 constexpr const char* kAccessToken = "demo-access-token";
 constexpr const char* kRefreshToken = "demo-refresh-token";
+enum class LicenseMode {
+    None,
+    Active,
+    Expired,
+    Blocked
+};
+
 std::atomic_bool g_has_license = false;
+std::atomic<LicenseMode> g_license_mode = LicenseMode::None;
 std::atomic_bool g_running = true;
 
 std::string JsonEscape(const std::string& value) {
@@ -155,6 +163,13 @@ std::string HandleRequest(const std::string& request) {
     }
 
     if (method == "GET" && path == "/api/license/status") {
+        LicenseMode mode = g_license_mode.load();
+        if (mode == LicenseMode::Expired) {
+            return Ok("{\"hasLicense\":0,\"ticket\":\"\",\"expiresAt\":\"2025-01-01T00:00:00Z\",\"licenseExpiresIn\":60,\"error\":\"license expired\"}");
+        }
+        if (mode == LicenseMode::Blocked) {
+            return Ok("{\"hasLicense\":0,\"ticket\":\"\",\"expiresAt\":\"\",\"licenseExpiresIn\":60,\"error\":\"license blocked\"}");
+        }
         if (!g_has_license.load()) {
             return Ok("{\"hasLicense\":0,\"ticket\":\"\",\"expiresAt\":\"\",\"licenseExpiresIn\":60}");
         }
@@ -169,11 +184,22 @@ std::string HandleRequest(const std::string& request) {
 
     if (method == "POST" && path == "/api/license/activate") {
         const std::string code = ExtractJsonString(body, "activationCode");
+        if (code == "EXPIRED-KEY") {
+            g_has_license = false;
+            g_license_mode = LicenseMode::Expired;
+            return BadRequest("license expired");
+        }
+        if (code == "BLOCKED-KEY") {
+            g_has_license = false;
+            g_license_mode = LicenseMode::Blocked;
+            return BadRequest("license blocked");
+        }
         if (code != "DEMO-KEY") {
             return BadRequest("activation code must be DEMO-KEY");
         }
 
         g_has_license = true;
+        g_license_mode = LicenseMode::Active;
         const std::string expires_at = LicenseExpiresAt();
         return Ok(
             "{\"hasLicense\":1,\"ticket\":\"demo-license-ticket\",\"expiresAt\":\"" +

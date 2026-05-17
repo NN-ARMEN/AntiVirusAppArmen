@@ -52,6 +52,8 @@ std::wstring GetCurrentDirectoryForModule();
 constexpr wchar_t kDemoLogin[] = L"test";
 constexpr wchar_t kDemoPassword[] = L"test";
 constexpr wchar_t kDemoActivationCode[] = L"DEMO-KEY";
+constexpr wchar_t kDemoExpiredActivationCode[] = L"EXPIRED-KEY";
+constexpr wchar_t kDemoBlockedActivationCode[] = L"BLOCKED-KEY";
 constexpr wchar_t kDemoAccessToken[] = L"demo-access-token";
 constexpr wchar_t kDemoRefreshToken[] = L"demo-refresh-token";
 constexpr wchar_t kDemoLicenseTicket[] = L"demo-license-ticket";
@@ -532,6 +534,19 @@ long ActivateLicense(const std::wstring& code, std::wstring& error) {
         return ERROR_NOT_LOGGED_ON;
     }
     if (IsDemoAccessToken(accessToken)) {
+        if (code == kDemoExpiredActivationCode || code == kDemoBlockedActivationCode) {
+            EnterCriticalSection(&g_auth_lock);
+            g_auth.hasLicense = false;
+            g_auth.licenseTicket.clear();
+            g_auth.licenseExpiresAt.clear();
+            g_auth.nextLicenseRefreshTick = 0;
+            LeaveCriticalSection(&g_auth_lock);
+            error = code == kDemoExpiredActivationCode
+                ? L"License expired on server"
+                : L"License blocked on server";
+            return ERROR_NOT_READY;
+        }
+
         if (code != kDemoActivationCode) {
             error = L"Activation code must be DEMO-KEY";
             return ERROR_INVALID_DATA;

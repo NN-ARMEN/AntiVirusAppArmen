@@ -19,6 +19,8 @@ POST /api/license/activate
 login: test
 password: test
 activation code: DEMO-KEY
+expired license demo code: EXPIRED-KEY
+blocked license demo code: BLOCKED-KEY
 ```
 
 ## Запуск
@@ -65,6 +67,8 @@ sc.exe start ZIOVPOPracticeService
 curl.exe http://127.0.0.1:18080/api/license/status
 curl.exe -X POST http://127.0.0.1:18080/api/auth/login -H "Content-Type: application/json" -d "{\"login\":\"test\",\"password\":\"test\"}"
 curl.exe -X POST http://127.0.0.1:18080/api/license/activate -H "Content-Type: application/json" -d "{\"activationCode\":\"DEMO-KEY\"}"
+curl.exe -X POST http://127.0.0.1:18080/api/license/activate -H "Content-Type: application/json" -d "{\"activationCode\":\"EXPIRED-KEY\"}"
+curl.exe -X POST http://127.0.0.1:18080/api/license/activate -H "Content-Type: application/json" -d "{\"activationCode\":\"BLOCKED-KEY\"}"
 ```
 
 На защите можно сказать: mock-сервер имитирует сервер из задания 1.2 для демонстрации сценариев входа, проверки лицензии и активации. Основная логика практики 3 находится в Windows-службе и GUI: служба делает HTTP-запросы, хранит токены и лицензионный тикет только в памяти и отдаёт клиенту только безопасные данные через Windows RPC.
