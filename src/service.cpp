@@ -385,7 +385,7 @@ void SetDemoAuthenticatedUser() {
 
 long TryDemoAuthenticate(const std::wstring& login, const std::wstring& password, std::wstring& error) {
     if (login != kDemoLogin || password != kDemoPassword) {
-        error = L"Use login test and password test";
+        error = L"Invalid login or password";
         return ERROR_LOGON_FAILURE;
     }
 
@@ -548,7 +548,7 @@ long ActivateLicense(const std::wstring& code, std::wstring& error) {
         }
 
         if (code != kDemoActivationCode) {
-            error = L"Activation code must be DEMO-KEY";
+            error = L"Invalid activation code";
             return ERROR_INVALID_DATA;
         }
 
