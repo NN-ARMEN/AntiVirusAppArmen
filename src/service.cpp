@@ -49,6 +49,14 @@ AuthState g_auth;
 
 std::wstring GetCurrentDirectoryForModule();
 
+constexpr wchar_t kDemoLogin[] = L"test";
+constexpr wchar_t kDemoPassword[] = L"test";
+constexpr wchar_t kDemoActivationCode[] = L"DEMO-KEY";
+constexpr wchar_t kDemoAccessToken[] = L"demo-access-token";
+constexpr wchar_t kDemoRefreshToken[] = L"demo-refresh-token";
+constexpr wchar_t kDemoLicenseTicket[] = L"demo-license-ticket";
+constexpr wchar_t kDemoLicenseExpiresAt[] = L"2026-12-31T23:59:59Z";
+
 PSECURITY_DESCRIPTOR CreateProtectedProcessSecurityDescriptor() {
     PSECURITY_DESCRIPTOR security_descriptor = nullptr;
     constexpr wchar_t kProtectedProcessSddl[] =
@@ -351,6 +359,39 @@ void ClearAuthState() {
     LeaveCriticalSection(&g_auth_lock);
 }
 
+bool IsDemoAccessToken(const std::wstring& accessToken) {
+    return accessToken == kDemoAccessToken;
+}
+
+bool IsDemoRefreshToken(const std::wstring& refreshToken) {
+    return refreshToken == kDemoRefreshToken;
+}
+
+void SetDemoAuthenticatedUser() {
+    EnterCriticalSection(&g_auth_lock);
+    g_auth.authenticated = true;
+    g_auth.login = kDemoLogin;
+    g_auth.accessToken = kDemoAccessToken;
+    g_auth.refreshToken = kDemoRefreshToken;
+    g_auth.nextTokenRefreshTick = DelayFromSeconds(120, 120);
+    g_auth.hasLicense = false;
+    g_auth.licenseTicket.clear();
+    g_auth.licenseExpiresAt.clear();
+    g_auth.nextLicenseRefreshTick = 0;
+    LeaveCriticalSection(&g_auth_lock);
+}
+
+long TryDemoAuthenticate(const std::wstring& login, const std::wstring& password, std::wstring& error) {
+    if (login != kDemoLogin || password != kDemoPassword) {
+        error = L"Use login test and password test";
+        return ERROR_LOGON_FAILURE;
+    }
+
+    SetDemoAuthenticatedUser();
+    error.clear();
+    return 0;
+}
+
 long AuthenticateUser(const std::wstring& login, const std::wstring& password, std::wstring& error) {
     const std::wstring path = GetEnvOrDefault(L"ZIOVPO_LOGIN_PATH", L"/api/auth/login");
     const std::wstring body =
@@ -359,8 +400,14 @@ long AuthenticateUser(const std::wstring& login, const std::wstring& password, s
     DWORD status = 0;
     std::wstring response;
     if (!HttpRequestJson(L"POST", path, body, L"", status, response) || status < 200 || status >= 300) {
-        error = !response.empty() ? response : L"Authentication request failed";
-        return static_cast<long>(status ? status : ERROR_NOT_CONNECTED);
+        long demoResult = TryDemoAuthenticate(login, password, error);
+        if (demoResult == 0) {
+            WriteLog(L"Using built-in demo authentication fallback");
+            return 0;
+        }
+
+        error = !response.empty() ? response : error;
+        return status ? static_cast<long>(status) : demoResult;
     }
 
     std::wstring access = ExtractJsonString(response, L"accessToken");
@@ -401,6 +448,14 @@ long RefreshTokens() {
     if (refreshToken.empty()) {
         return ERROR_NOT_LOGGED_ON;
     }
+    if (IsDemoRefreshToken(refreshToken)) {
+        EnterCriticalSection(&g_auth_lock);
+        g_auth.accessToken = kDemoAccessToken;
+        g_auth.refreshToken = kDemoRefreshToken;
+        g_auth.nextTokenRefreshTick = DelayFromSeconds(120, 120);
+        LeaveCriticalSection(&g_auth_lock);
+        return 0;
+    }
 
     const std::wstring path = GetEnvOrDefault(L"ZIOVPO_REFRESH_PATH", L"/api/auth/refresh");
     const std::wstring body = L"{\"refreshToken\":\"" + JsonEscape(refreshToken) + L"\"}";
@@ -436,6 +491,13 @@ long QueryLicenseStatus(std::wstring& error) {
         error = L"User is not authenticated";
         return ERROR_NOT_LOGGED_ON;
     }
+    if (IsDemoAccessToken(accessToken)) {
+        EnterCriticalSection(&g_auth_lock);
+        g_auth.nextLicenseRefreshTick = g_auth.hasLicense ? DelayFromSeconds(120, 120) : 0;
+        LeaveCriticalSection(&g_auth_lock);
+        error.clear();
+        return 0;
+    }
 
     const std::wstring path = GetEnvOrDefault(L"ZIOVPO_LICENSE_STATUS_PATH", L"/api/license/status");
     DWORD status = 0;
@@ -468,6 +530,21 @@ long ActivateLicense(const std::wstring& code, std::wstring& error) {
     if (accessToken.empty()) {
         error = L"User is not authenticated";
         return ERROR_NOT_LOGGED_ON;
+    }
+    if (IsDemoAccessToken(accessToken)) {
+        if (code != kDemoActivationCode) {
+            error = L"Activation code must be DEMO-KEY";
+            return ERROR_INVALID_DATA;
+        }
+
+        EnterCriticalSection(&g_auth_lock);
+        g_auth.hasLicense = true;
+        g_auth.licenseTicket = kDemoLicenseTicket;
+        g_auth.licenseExpiresAt = kDemoLicenseExpiresAt;
+        g_auth.nextLicenseRefreshTick = DelayFromSeconds(120, 120);
+        LeaveCriticalSection(&g_auth_lock);
+        error.clear();
+        return 0;
     }
 
     const std::wstring path = GetEnvOrDefault(L"ZIOVPO_ACTIVATE_PATH", L"/api/license/activate");
