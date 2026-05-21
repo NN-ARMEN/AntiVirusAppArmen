@@ -1,13 +1,27 @@
-#include <windows.h>
+﻿#include <windows.h>
 #include <shellapi.h>
+#include <winsvc.h>
+#include <tlhelp32.h>
+#include <string>
+#include "rpc_interface.h"
+
+extern BOOL CreateRpcBinding(void);
+extern void DestroyRpcBinding(void);
+extern BOOL CallStopService(void);
+extern int CallGetServiceStatus(void);
+extern void CallRegisterClient(long sessionId, long processId);
+extern void CallUnregisterClient(long processId);
 
 #pragma comment(lib, "user32.lib")
 #pragma comment(lib, "shell32.lib")
+#pragma comment(lib, "advapi32.lib")
 
 #define WM_TRAYICON (WM_USER + 1)
 #define ID_TRAY_OPEN 1001
 #define ID_TRAY_EXIT 1002
 #define ID_FILE_EXIT 2001
+#define SERVICE_NAME L"AVAA_Service"
+#define SERVICE_START_TIMEOUT 30000
 
 HINSTANCE g_hInst = NULL;
 HWND g_hMainWnd = NULL;
@@ -15,8 +29,7 @@ HWND g_hHiddenWnd = NULL;
 NOTIFYICONDATAW g_nid = {};
 BOOL g_bWindowVisible = FALSE;
 HANDLE g_hMutex = NULL;
-
-const wchar_t MUTEX_NAME[] = L"Global\\TrayApp_Single_Instance";
+const wchar_t MUTEX_NAME[] = L"Global\\AVAA_Single_Instance";
 
 LRESULT CALLBACK MainWndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam);
 LRESULT CALLBACK HiddenWndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam);
@@ -30,6 +43,107 @@ void ShowContextMenu(HWND hWnd);
 void HandleTrayMessage(WPARAM wParam, LPARAM lParam);
 BOOL CheckSingleInstance();
 void ReleaseSingleInstance();
+BOOL IsServiceRunning();
+BOOL StartServiceAndWait();
+BOOL IsParentService();
+void StopServiceViaRPC();
+void RegisterWithService();
+
+BOOL IsServiceRunning() {
+    SC_HANDLE scManager = OpenSCManagerW(NULL, NULL, SC_MANAGER_CONNECT);
+    if (!scManager) return FALSE;
+    SC_HANDLE scService = OpenServiceW(scManager, SERVICE_NAME, SERVICE_QUERY_STATUS);
+    if (!scService) {
+        CloseServiceHandle(scManager);
+        return FALSE;
+    }
+    SERVICE_STATUS_PROCESS ssStatus;
+    DWORD bytesNeeded;
+    BOOL result = FALSE;
+    if (QueryServiceStatusEx(scService, SC_STATUS_PROCESS_INFO, (LPBYTE)&ssStatus, sizeof(ssStatus), &bytesNeeded)) {
+        result = (ssStatus.dwCurrentState == SERVICE_RUNNING);
+    }
+    CloseServiceHandle(scService);
+    CloseServiceHandle(scManager);
+    return result;
+}
+
+BOOL StartServiceAndWait() {
+    SC_HANDLE scManager = OpenSCManagerW(NULL, NULL, SC_MANAGER_CONNECT);
+    if (!scManager) return FALSE;
+    SC_HANDLE scService = OpenServiceW(scManager, SERVICE_NAME, SERVICE_START | SERVICE_QUERY_STATUS);
+    if (!scService) {
+        CloseServiceHandle(scManager);
+        return FALSE;
+    }
+    if (!StartServiceW(scService, 0, NULL)) {
+        if (GetLastError() != ERROR_SERVICE_ALREADY_RUNNING) {
+            CloseServiceHandle(scService);
+            CloseServiceHandle(scManager);
+            return FALSE;
+        }
+    }
+    SERVICE_STATUS_PROCESS ssStatus;
+    DWORD startTime = GetTickCount();
+    DWORD bytesNeeded;
+    while (GetTickCount() - startTime < SERVICE_START_TIMEOUT) {
+        if (QueryServiceStatusEx(scService, SC_STATUS_PROCESS_INFO, (LPBYTE)&ssStatus, sizeof(ssStatus), &bytesNeeded)) {
+            if (ssStatus.dwCurrentState == SERVICE_RUNNING) {
+                CloseServiceHandle(scService);
+                CloseServiceHandle(scManager);
+                return TRUE;
+            }
+        }
+        Sleep(1000);
+    }
+    CloseServiceHandle(scService);
+    CloseServiceHandle(scManager);
+    return FALSE;
+}
+
+BOOL IsParentService() {
+    HANDLE hSnapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+    if (hSnapshot == INVALID_HANDLE_VALUE) return FALSE;
+    PROCESSENTRY32W pe = { sizeof(pe) };
+    DWORD currentPid = GetCurrentProcessId();
+    DWORD parentPid = 0;
+    if (Process32FirstW(hSnapshot, &pe)) {
+        do {
+            if (pe.th32ProcessID == currentPid) {
+                parentPid = pe.th32ParentProcessID;
+                break;
+            }
+        } while (Process32NextW(hSnapshot, &pe));
+    }
+    CloseHandle(hSnapshot);
+    if (parentPid == 0) return FALSE;
+    HANDLE hParent = OpenProcess(PROCESS_QUERY_INFORMATION, FALSE, parentPid);
+    if (!hParent) return FALSE;
+    WCHAR parentPath[MAX_PATH];
+    DWORD size = MAX_PATH;
+    BOOL result = FALSE;
+    if (QueryFullProcessImageNameW(hParent, 0, parentPath, &size)) {
+        result = (wcsstr(parentPath, L"AVAAService") != NULL) || (wcsstr(parentPath, L"AVAA_Service") != NULL);
+    }
+    CloseHandle(hParent);
+    return result;
+}
+
+void StopServiceViaRPC() {
+    if (CreateRpcBinding()) {
+        CallStopService();
+        DestroyRpcBinding();
+    }
+}
+
+void RegisterWithService() {
+    DWORD sessionId = 0;
+    ProcessIdToSessionId(GetCurrentProcessId(), &sessionId);
+    if (CreateRpcBinding()) {
+        CallRegisterClient(sessionId, GetCurrentProcessId());
+        DestroyRpcBinding();
+    }
+}
 
 BOOL CheckSingleInstance() {
     g_hMutex = CreateMutexW(NULL, TRUE, MUTEX_NAME);
@@ -56,7 +170,7 @@ void AddTrayIcon(HWND hWnd) {
     g_nid.uFlags = NIF_ICON | NIF_MESSAGE | NIF_TIP;
     g_nid.uCallbackMessage = WM_TRAYICON;
     g_nid.hIcon = LoadIcon(NULL, IDI_APPLICATION);
-    wcscpy_s(g_nid.szTip, 128, L"Tray Application");
+    wcscpy_s(g_nid.szTip, 128, L"AVAA");
     Shell_NotifyIconW(NIM_ADD, &g_nid);
 }
 
@@ -84,10 +198,9 @@ void HideMainWindow() {
 
 void ShowContextMenu(HWND hWnd) {
     HMENU hMenu = CreatePopupMenu();
-    InsertMenuW(hMenu, 0, MF_BYPOSITION | MF_STRING, ID_TRAY_OPEN, L"\u041E\u0442\u043A\u0440\u044B\u0442\u044C");
+    InsertMenuW(hMenu, 0, MF_BYPOSITION | MF_STRING, ID_TRAY_OPEN, L"Открыть");
     InsertMenuW(hMenu, 1, MF_BYPOSITION | MF_SEPARATOR, 0, NULL);
-    InsertMenuW(hMenu, 2, MF_BYPOSITION | MF_STRING, ID_TRAY_EXIT, L"\u0412\u044B\u0445\u043E\u0434");
-    
+    InsertMenuW(hMenu, 2, MF_BYPOSITION | MF_STRING, ID_TRAY_EXIT, L"Выход");
     POINT pt;
     GetCursorPos(&pt);
     SetForegroundWindow(hWnd);
@@ -98,7 +211,6 @@ void ShowContextMenu(HWND hWnd) {
 
 void HandleTrayMessage(WPARAM wParam, LPARAM lParam) {
     if (wParam != 1) return;
-    
     switch (lParam) {
         case WM_LBUTTONDOWN:
             if (g_bWindowVisible) HideMainWindow();
@@ -111,8 +223,7 @@ void HandleTrayMessage(WPARAM wParam, LPARAM lParam) {
 }
 
 void CreateMainWindow() {
-    const wchar_t CLASS_NAME[] = L"TrayAppMainWindow";
-    
+    const wchar_t CLASS_NAME[] = L"AVAA_MainWindow";
     WNDCLASSW wc = {};
     wc.lpfnWndProc = MainWndProc;
     wc.hInstance = g_hInst;
@@ -120,50 +231,33 @@ void CreateMainWindow() {
     wc.hCursor = LoadCursor(NULL, IDC_ARROW);
     wc.hbrBackground = (HBRUSH)(COLOR_WINDOW + 1);
     RegisterClassW(&wc);
-    
-    g_hMainWnd = CreateWindowExW(0, CLASS_NAME, L"Tray Application",
-        WS_OVERLAPPEDWINDOW, CW_USEDEFAULT, CW_USEDEFAULT, 500, 400,
-        NULL, NULL, g_hInst, NULL);
-    
+    g_hMainWnd = CreateWindowExW(0, CLASS_NAME, L"AVAA", WS_OVERLAPPEDWINDOW, CW_USEDEFAULT, CW_USEDEFAULT, 550, 450, NULL, NULL, g_hInst, NULL);
     HMENU hMenuBar = CreateMenu();
     HMENU hFileMenu = CreatePopupMenu();
-    AppendMenuW(hFileMenu, MF_STRING, ID_FILE_EXIT, L"\u0412\u044B\u0445\u043E\u0434");
-    AppendMenuW(hMenuBar, MF_POPUP, (UINT_PTR)hFileMenu, L"\u0424\u0430\u0439\u043B");
+    AppendMenuW(hFileMenu, MF_STRING, ID_FILE_EXIT, L"Выход");
+    AppendMenuW(hMenuBar, MF_POPUP, (UINT_PTR)hFileMenu, L"Файл");
     SetMenu(g_hMainWnd, hMenuBar);
-    
-    CreateWindowW(L"STATIC",
-        L"\u041F\u0440\u0438\u043B\u043E\u0436\u0435\u043D\u0438\u0435 \u0440\u0430\u0431\u043E\u0442\u0430\u0435\u0442 \u0432 \u0441\u0438\u0441\u0442\u0435\u043C\u043D\u043E\u043C \u0442\u0440\u0435\u0435\n\n"
-        L"\u2022 \u041B\u0435\u0432\u0430\u044F \u043A\u043D\u043E\u043F\u043A\u0430 \u043D\u0430 \u0438\u043A\u043E\u043D\u043A\u0435 - \u043F\u043E\u043A\u0430\u0437\u0430\u0442\u044C/\u0441\u043A\u0440\u044B\u0442\u044C \u043E\u043A\u043D\u043E\n"
-        L"\u2022 \u041F\u0440\u0430\u0432\u0430\u044F \u043A\u043D\u043E\u043F\u043A\u0430 - \u043A\u043E\u043D\u0442\u0435\u043A\u0441\u0442\u043D\u043E\u0435 \u043C\u0435\u043D\u044E\n"
-        L"\u2022 \u0417\u0430\u043A\u0440\u044B\u0442\u0438\u0435 \u043E\u043A\u043D\u0430 \u0441\u043A\u0440\u044B\u0432\u0430\u0435\u0442 \u0432 \u0442\u0440\u0435\u0439\n"
-        L"\u2022 \u0424\u0430\u0439\u043B -> \u0412\u044B\u0445\u043E\u0434 - \u0437\u0430\u043A\u0440\u044B\u0442\u044C \u043F\u0440\u0438\u043B\u043E\u0436\u0435\u043D\u0438\u0435\n\n"
-        L"\u0422\u043E\u043B\u044C\u043A\u043E \u043E\u0434\u0438\u043D \u044D\u043A\u0437\u0435\u043C\u043F\u043B\u044F\u0440 \u043F\u0440\u0438\u043B\u043E\u0436\u0435\u043D\u0438\u044F \u043C\u043E\u0436\u0435\u0442 \u0431\u044B\u0442\u044C \u0437\u0430\u043F\u0443\u0449\u0435\u043D!",
-        WS_VISIBLE | WS_CHILD | SS_LEFT,
-        20, 30, 460, 200,
-        g_hMainWnd, NULL, g_hInst, NULL);
+    CreateWindowW(L"STATIC", L"AVAA - Приложение работает в системном трее\n\n• Левая кнопка на иконке - показать/скрыть окно\n• Правая кнопка - контекстное меню\n• Закрытие окна скрывает в трей\n• Выход через меню останавливает службу\n\nТолько один экземпляр приложения может быть запущен!", WS_VISIBLE | WS_CHILD | SS_LEFT, 20, 30, 500, 180, g_hMainWnd, NULL, g_hInst, NULL);
 }
 
 HWND CreateHiddenWindow() {
-    const wchar_t CLASS_NAME[] = L"TrayAppHiddenWindow";
+    const wchar_t CLASS_NAME[] = L"AVAA_HiddenWindow";
     WNDCLASSW wc = {};
     wc.lpfnWndProc = HiddenWndProc;
     wc.hInstance = g_hInst;
     wc.lpszClassName = CLASS_NAME;
     RegisterClassW(&wc);
-    
-    return CreateWindowExW(0, CLASS_NAME, L"HiddenWindow",
-        WS_POPUP, 0, 0, 0, 0,
-        NULL, NULL, g_hInst, NULL);
+    return CreateWindowExW(0, CLASS_NAME, L"HiddenWindow", WS_POPUP, 0, 0, 0, 0, NULL, NULL, g_hInst, NULL);
 }
 
 LRESULT CALLBACK MainWndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam) {
     switch (message) {
-        case WM_CLOSE:
-        case WM_DESTROY:
+        case WM_CLOSE: case WM_DESTROY:
             HideMainWindow();
             return 0;
         case WM_COMMAND:
             if (LOWORD(wParam) == ID_FILE_EXIT) {
+                StopServiceViaRPC();
                 RemoveTrayIcon();
                 ReleaseSingleInstance();
                 PostQuitMessage(0);
@@ -176,28 +270,15 @@ LRESULT CALLBACK MainWndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lPar
 
 LRESULT CALLBACK HiddenWndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam) {
     static UINT uTaskbarRestart = 0;
-    
-    if (uTaskbarRestart == 0) {
-        uTaskbarRestart = RegisterWindowMessageW(L"TaskbarCreated");
-    }
-    
-    if (message == WM_TRAYICON) {
-        HandleTrayMessage(wParam, lParam);
-        return 0;
-    }
-    
-    if (uTaskbarRestart != 0 && message == uTaskbarRestart) {
-        AddTrayIcon(hWnd);
-        return 0;
-    }
-    
+    if (uTaskbarRestart == 0) uTaskbarRestart = RegisterWindowMessageW(L"TaskbarCreated");
+    if (message == WM_TRAYICON) { HandleTrayMessage(wParam, lParam); return 0; }
+    if (uTaskbarRestart != 0 && message == uTaskbarRestart) { AddTrayIcon(hWnd); return 0; }
     switch (message) {
         case WM_COMMAND:
             switch (LOWORD(wParam)) {
-                case ID_TRAY_OPEN:
-                    ShowMainWindow();
-                    return 0;
+                case ID_TRAY_OPEN: ShowMainWindow(); return 0;
                 case ID_TRAY_EXIT:
+                    StopServiceViaRPC();
                     RemoveTrayIcon();
                     ReleaseSingleInstance();
                     PostQuitMessage(0);
@@ -211,17 +292,23 @@ LRESULT CALLBACK HiddenWndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lP
 int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine, int nCmdShow) {
     g_hInst = hInstance;
     
+    // ================================================
+    // ВРЕМЕННО ОТКЛЮЧЕНО ДЛЯ ТЕСТА ИКОНКИ
+    // ================================================
+    // if (!IsParentService()) {
+    //     if (!IsServiceRunning()) StartServiceAndWait();
+    //     return 0;
+    // }
+    // ================================================
+    
     if (!CheckSingleInstance()) {
-        MessageBoxW(NULL, L"\u041F\u0440\u0438\u043B\u043E\u0436\u0435\u043D\u0438\u0435 \u0443\u0436\u0435 \u0437\u0430\u043F\u0443\u0449\u0435\u043D\u043E!", L"\u041E\u0448\u0438\u0431\u043A\u0430", MB_OK | MB_ICONERROR);
+        MessageBoxW(NULL, L"AVAA уже запущен!", L"Ошибка", MB_OK | MB_ICONERROR);
         return 1;
     }
     
+    RegisterWithService();
     g_hHiddenWnd = CreateHiddenWindow();
-    if (!g_hHiddenWnd) {
-        ReleaseSingleInstance();
-        return 1;
-    }
-    
+    if (!g_hHiddenWnd) { ReleaseSingleInstance(); return 1; }
     CreateMainWindow();
     AddTrayIcon(g_hHiddenWnd);
     

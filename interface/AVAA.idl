@@ -1,0 +1,19 @@
+[
+    uuid(12345678-1234-1234-1234-123456789ABC),
+    version(1.0),
+    implicit_handle(handle_t AVAA_BINDING_HANDLE)
+]
+interface AVAA_INTERFACE
+{
+    // Метод для остановки службы
+    void StopService();
+    
+    // Метод для проверки статуса службы
+    int GetServiceStatus();
+    
+    // Метод для регистрации графического приложения
+    void RegisterClient([in] int sessionId, [in] int processId);
+    
+    // Метод для отмены регистрации
+    void UnregisterClient([in] int processId);
+}
