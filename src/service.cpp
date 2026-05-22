@@ -9,9 +9,11 @@
 #include <algorithm>
 #include <array>
 #include <deque>
+#include <cstring>
 #include <cstdint>
 #include <malloc.h>
 #include <fstream>
+#include <iterator>
 #include <chrono>
 #include <cwctype>
 #include <map>
@@ -39,6 +41,7 @@ std::vector<PROCESS_INFORMATION> g_tray_processes;
 HANDLE g_refresh_thread = nullptr;
 HANDLE g_schedule_thread = nullptr;
 HANDLE g_monitor_thread = nullptr;
+HANDLE g_database_update_thread = nullptr;
 HANDLE g_monitor_stop_event = nullptr;
 CRITICAL_SECTION g_av_lock;
 CRITICAL_SECTION g_schedule_lock;
@@ -113,6 +116,15 @@ constexpr wchar_t kDemoAccessToken[] = L"demo-access-token";
 constexpr wchar_t kDemoRefreshToken[] = L"demo-refresh-token";
 constexpr wchar_t kDemoLicenseTicket[] = L"demo-license-ticket";
 constexpr wchar_t kDemoLicenseExpiresAt[] = L"2026-12-31T23:59:59Z";
+constexpr wchar_t kAvDatabaseFileName[] = L"ziovpo_avdb.bin";
+constexpr wchar_t kAvDatabaseBackupFileName[] = L"ziovpo_avdb.bak";
+constexpr DWORD kAvDatabaseMagic = 0x4244565A; // ZVDB
+constexpr DWORD kAvDatabaseVersion = 1;
+constexpr long kDatabaseUpdateIntervalSeconds = 60;
+
+void BuildAhoCorasickAutomaton();
+bool RequestRecordFromUpdateServer(const AvRecord& record);
+bool UpdateAvDatabaseFromServer();
 
 PSECURITY_DESCRIPTOR CreateProtectedProcessSecurityDescriptor() {
     PSECURITY_DESCRIPTOR security_descriptor = nullptr;
@@ -341,6 +353,48 @@ void AppendUint32(std::vector<unsigned char>& bytes, uint32_t value) {
     }
 }
 
+void AppendBytes(std::vector<unsigned char>& bytes, const void* data, size_t size) {
+    const unsigned char* raw = static_cast<const unsigned char*>(data);
+    bytes.insert(bytes.end(), raw, raw + size);
+}
+
+bool ReadUint32(const std::vector<unsigned char>& bytes, size_t& offset, uint32_t& value) {
+    if (offset + 4 > bytes.size()) {
+        return false;
+    }
+    value = 0;
+    for (int i = 0; i < 4; ++i) {
+        value |= static_cast<uint32_t>(bytes[offset + i]) << (i * 8);
+    }
+    offset += 4;
+    return true;
+}
+
+bool ReadUint64(const std::vector<unsigned char>& bytes, size_t& offset, uint64_t& value) {
+    if (offset + 8 > bytes.size()) {
+        return false;
+    }
+    value = 0;
+    for (int i = 0; i < 8; ++i) {
+        value |= static_cast<uint64_t>(bytes[offset + i]) << (i * 8);
+    }
+    offset += 8;
+    return true;
+}
+
+bool ReadBytes(const std::vector<unsigned char>& bytes, size_t& offset, void* target, size_t size) {
+    if (offset + size > bytes.size()) {
+        return false;
+    }
+    memcpy(target, bytes.data() + offset, size);
+    offset += size;
+    return true;
+}
+
+std::wstring BytesToWideString(const std::vector<unsigned char>& bytes) {
+    return FromUtf8(std::string(bytes.begin(), bytes.end()));
+}
+
 std::array<unsigned char, 32> MakeRecordSignature(const AvRecord& record) {
     std::vector<unsigned char> bytes;
     AppendUint64(bytes, record.prefix);
@@ -350,6 +404,104 @@ std::array<unsigned char, 32> MakeRecordSignature(const AvRecord& record) {
     AppendUint64(bytes, record.offset_end);
     bytes.push_back(static_cast<unsigned char>(record.object_type));
     return Sha256(bytes);
+}
+
+AvRecord MakeAvRecord(const char* signature, ObjectType object_type, uint64_t offset_begin, uint64_t offset_end, const std::wstring& name);
+
+std::vector<AvRecord> BuildDefaultAvRecords() {
+    return {
+        MakeAvRecord("EICAR-ZIOVPO-PE", ObjectType::PeFile, 0, 1024 * 1024, L"Demo.PE.EicarZIOVPO"),
+        MakeAvRecord("ZIOVPO-SCRIPT-MALWARE", ObjectType::Script, 0, 1024 * 1024, L"Demo.Script.ZIOVPO")
+    };
+}
+
+std::array<unsigned char, 32> MakeManifestSignature(
+    const std::wstring& releaseDate,
+    const std::vector<AvRecord>& records) {
+    std::vector<unsigned char> bytes;
+    std::string release = ToUtf8(releaseDate);
+    AppendUint32(bytes, kAvDatabaseMagic);
+    AppendUint32(bytes, kAvDatabaseVersion);
+    AppendUint32(bytes, static_cast<uint32_t>(release.size()));
+    AppendBytes(bytes, release.data(), release.size());
+    AppendUint32(bytes, static_cast<uint32_t>(records.size()));
+    for (const AvRecord& record : records) {
+        AppendUint64(bytes, record.prefix);
+        AppendUint32(bytes, record.length);
+        AppendBytes(bytes, record.signature_hash.data(), record.signature_hash.size());
+        AppendUint64(bytes, record.offset_begin);
+        AppendUint64(bytes, record.offset_end);
+        bytes.push_back(static_cast<unsigned char>(record.object_type));
+        AppendUint32(bytes, static_cast<uint32_t>(record.signature_bytes.size()));
+        AppendBytes(bytes, record.signature_bytes.data(), record.signature_bytes.size());
+        std::string name = ToUtf8(record.name);
+        AppendUint32(bytes, static_cast<uint32_t>(name.size()));
+        AppendBytes(bytes, name.data(), name.size());
+        AppendBytes(bytes, record.record_signature.data(), record.record_signature.size());
+    }
+    return Sha256(bytes);
+}
+
+std::wstring AvDatabasePath() {
+    return GetCurrentDirectoryForModule() + L"\\" + kAvDatabaseFileName;
+}
+
+std::wstring AvDatabaseBackupPath() {
+    return GetCurrentDirectoryForModule() + L"\\" + kAvDatabaseBackupFileName;
+}
+
+std::vector<unsigned char> SerializeAvDatabase(const std::wstring& releaseDate, const std::vector<AvRecord>& records) {
+    std::vector<unsigned char> bytes;
+    std::string release = ToUtf8(releaseDate);
+    std::array<unsigned char, 32> manifestSignature = MakeManifestSignature(releaseDate, records);
+
+    AppendUint32(bytes, kAvDatabaseMagic);
+    AppendUint32(bytes, kAvDatabaseVersion);
+    AppendUint32(bytes, static_cast<uint32_t>(release.size()));
+    AppendBytes(bytes, release.data(), release.size());
+    AppendUint32(bytes, static_cast<uint32_t>(records.size()));
+    AppendBytes(bytes, manifestSignature.data(), manifestSignature.size());
+
+    for (const AvRecord& record : records) {
+        AppendUint64(bytes, record.prefix);
+        AppendUint32(bytes, record.length);
+        AppendBytes(bytes, record.signature_hash.data(), record.signature_hash.size());
+        AppendUint64(bytes, record.offset_begin);
+        AppendUint64(bytes, record.offset_end);
+        bytes.push_back(static_cast<unsigned char>(record.object_type));
+        AppendUint32(bytes, static_cast<uint32_t>(record.signature_bytes.size()));
+        AppendBytes(bytes, record.signature_bytes.data(), record.signature_bytes.size());
+        std::string name = ToUtf8(record.name);
+        AppendUint32(bytes, static_cast<uint32_t>(name.size()));
+        AppendBytes(bytes, name.data(), name.size());
+        AppendBytes(bytes, record.record_signature.data(), record.record_signature.size());
+    }
+    return bytes;
+}
+
+bool WriteAllBytes(const std::wstring& path, const std::vector<unsigned char>& bytes) {
+    std::ofstream file(path.c_str(), std::ios::binary | std::ios::trunc);
+    if (!file) {
+        return false;
+    }
+    file.write(reinterpret_cast<const char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
+    return file.good();
+}
+
+bool ReadAllBytes(const std::wstring& path, std::vector<unsigned char>& bytes) {
+    std::ifstream file(path.c_str(), std::ios::binary);
+    if (!file) {
+        return false;
+    }
+    bytes.assign(std::istreambuf_iterator<char>(file), std::istreambuf_iterator<char>());
+    return true;
+}
+
+void ResetAvDatabaseUnlocked(const std::wstring& releaseDate) {
+    g_av_database.release_date = releaseDate;
+    g_av_database.records.clear();
+    g_av_database.all_records.clear();
+    g_av_database.aho_nodes.clear();
 }
 
 AvRecord MakeAvRecord(const char* signature, ObjectType object_type, uint64_t offset_begin, uint64_t offset_end, const std::wstring& name) {
@@ -370,6 +522,231 @@ AvRecord MakeAvRecord(const char* signature, ObjectType object_type, uint64_t of
 void AddAvRecord(const AvRecord& record) {
     g_av_database.records[record.prefix].push_back(record);
     g_av_database.all_records.push_back(record);
+}
+
+bool LoadAvDatabaseFromBytes(const std::vector<unsigned char>& bytes, std::wstring& error, std::vector<AvRecord>& loadedRecords, std::wstring& releaseDate) {
+    loadedRecords.clear();
+    releaseDate.clear();
+
+    size_t offset = 0;
+    uint32_t magic = 0;
+    uint32_t version = 0;
+    uint32_t releaseSize = 0;
+    uint32_t recordCount = 0;
+    std::array<unsigned char, 32> storedManifest{};
+
+    if (!ReadUint32(bytes, offset, magic) || magic != kAvDatabaseMagic ||
+        !ReadUint32(bytes, offset, version) || version != kAvDatabaseVersion ||
+        !ReadUint32(bytes, offset, releaseSize) || releaseSize > 1024) {
+        error = L"Invalid AV database header";
+        return false;
+    }
+
+    std::vector<unsigned char> releaseBytes(releaseSize);
+    if (!ReadBytes(bytes, offset, releaseBytes.data(), releaseBytes.size()) ||
+        !ReadUint32(bytes, offset, recordCount) ||
+        recordCount > 100000 ||
+        !ReadBytes(bytes, offset, storedManifest.data(), storedManifest.size())) {
+        error = L"Invalid AV database manifest";
+        return false;
+    }
+    releaseDate = BytesToWideString(releaseBytes);
+
+    std::vector<AvRecord> parsedRecords;
+    parsedRecords.reserve(recordCount);
+    for (uint32_t i = 0; i < recordCount; ++i) {
+        AvRecord record;
+        uint8_t objectType = 0;
+        uint32_t signatureSize = 0;
+        uint32_t nameSize = 0;
+
+        if (!ReadUint64(bytes, offset, record.prefix) ||
+            !ReadUint32(bytes, offset, record.length) ||
+            !ReadBytes(bytes, offset, record.signature_hash.data(), record.signature_hash.size()) ||
+            !ReadUint64(bytes, offset, record.offset_begin) ||
+            !ReadUint64(bytes, offset, record.offset_end) ||
+            !ReadBytes(bytes, offset, &objectType, 1) ||
+            !ReadUint32(bytes, offset, signatureSize) ||
+            signatureSize > 4096) {
+            error = L"Invalid AV record";
+            return false;
+        }
+
+        record.object_type = static_cast<ObjectType>(objectType);
+        record.signature_bytes.resize(signatureSize);
+        if (!ReadBytes(bytes, offset, record.signature_bytes.data(), record.signature_bytes.size()) ||
+            !ReadUint32(bytes, offset, nameSize) ||
+            nameSize > 2048) {
+            error = L"Invalid AV record payload";
+            return false;
+        }
+
+        std::vector<unsigned char> nameBytes(nameSize);
+        if (!ReadBytes(bytes, offset, nameBytes.data(), nameBytes.size()) ||
+            !ReadBytes(bytes, offset, record.record_signature.data(), record.record_signature.size())) {
+            error = L"Invalid AV record signature";
+            return false;
+        }
+
+        record.name = BytesToWideString(nameBytes);
+        parsedRecords.push_back(record);
+    }
+
+    if (MakeManifestSignature(releaseDate, parsedRecords) != storedManifest) {
+        error = L"Invalid AV database manifest signature";
+        return false;
+    }
+
+    for (const AvRecord& record : parsedRecords) {
+        if (record.length != record.signature_bytes.size() ||
+            record.signature_hash != Sha256(record.signature_bytes) ||
+            record.record_signature != MakeRecordSignature(record)) {
+            WriteLog(L"Skipping AV record with invalid signature: " + record.name);
+            RequestRecordFromUpdateServer(record);
+            continue;
+        }
+
+        loadedRecords.push_back(record);
+    }
+
+    error.clear();
+    return true;
+}
+
+void ApplyAvRecordsUnlocked(const std::wstring& releaseDate, const std::vector<AvRecord>& records) {
+    ResetAvDatabaseUnlocked(releaseDate);
+    for (const AvRecord& record : records) {
+        AddAvRecord(record);
+    }
+    BuildAhoCorasickAutomaton();
+    g_av_database.loaded = true;
+}
+
+void SaveDefaultAvDatabaseToDisk() {
+    std::vector<AvRecord> records = BuildDefaultAvRecords();
+    WriteAllBytes(AvDatabasePath(), SerializeAvDatabase(L"2026-05-17", records));
+}
+
+bool EnsureAvDatabaseFileExists() {
+    if (GetFileAttributesW(AvDatabasePath().c_str()) != INVALID_FILE_ATTRIBUTES) {
+        return true;
+    }
+
+    WriteLog(L"AV database file is missing, creating default database");
+    SaveDefaultAvDatabaseToDisk();
+    return GetFileAttributesW(AvDatabasePath().c_str()) != INVALID_FILE_ATTRIBUTES;
+}
+
+bool LoadAvDatabaseFile(const std::wstring& path, std::wstring& error) {
+    std::vector<unsigned char> bytes;
+    if (!ReadAllBytes(path, bytes)) {
+        error = L"Cannot read AV database file";
+        return false;
+    }
+
+    std::vector<AvRecord> records;
+    std::wstring releaseDate;
+    if (!LoadAvDatabaseFromBytes(bytes, error, records, releaseDate)) {
+        return false;
+    }
+
+    EnterCriticalSection(&g_av_lock);
+    ApplyAvRecordsUnlocked(releaseDate, records);
+    LeaveCriticalSection(&g_av_lock);
+    WriteLog(L"AV database loaded from disk, records=" + std::to_wstring(records.size()));
+    return true;
+}
+
+void LoadDefaultAvDatabase() {
+    std::vector<AvRecord> records = BuildDefaultAvRecords();
+    EnterCriticalSection(&g_av_lock);
+    ApplyAvRecordsUnlocked(L"2026-05-17", records);
+    LeaveCriticalSection(&g_av_lock);
+    SaveDefaultAvDatabaseToDisk();
+    WriteLog(L"Default AV database loaded, records=" + std::to_wstring(records.size()));
+}
+
+bool RestoreAvDatabaseFromBackup() {
+    if (!CopyFileW(AvDatabaseBackupPath().c_str(), AvDatabasePath().c_str(), FALSE)) {
+        return false;
+    }
+    std::wstring error;
+    return LoadAvDatabaseFile(AvDatabasePath(), error);
+}
+
+bool NetworkAvailableForAvUpdates() {
+    return true;
+}
+
+bool RequestRecordFromUpdateServer(const AvRecord& record) {
+    UNREFERENCED_PARAMETER(record);
+    WriteLog(L"Requested invalid AV record from update server (demo)");
+    return NetworkAvailableForAvUpdates();
+}
+
+bool DownloadUpdatedAvDatabase() {
+    std::vector<AvRecord> records = BuildDefaultAvRecords();
+    records.push_back(MakeAvRecord("ZIOVPO-UPDATED-SIGNATURE", ObjectType::Script, 0, 1024 * 1024, L"Demo.Script.Updated"));
+    return WriteAllBytes(AvDatabasePath(), SerializeAvDatabase(L"2026-05-22", records));
+}
+
+bool BackupCurrentAvDatabase() {
+    if (GetFileAttributesW(AvDatabasePath().c_str()) == INVALID_FILE_ATTRIBUTES) {
+        SaveDefaultAvDatabaseToDisk();
+    }
+    return CopyFileW(AvDatabasePath().c_str(), AvDatabaseBackupPath().c_str(), FALSE) != FALSE;
+}
+
+bool UpdateAvDatabaseFromServer() {
+    WriteLog(L"Starting AV database update");
+    BackupCurrentAvDatabase();
+    if (!DownloadUpdatedAvDatabase()) {
+        WriteLog(L"AV database update download failed");
+        RestoreAvDatabaseFromBackup();
+        return false;
+    }
+
+    std::wstring error;
+    if (!LoadAvDatabaseFile(AvDatabasePath(), error)) {
+        WriteLog(L"Updated AV database load failed: " + error);
+        RestoreAvDatabaseFromBackup();
+        return false;
+    }
+
+    WriteLog(L"AV database updated successfully");
+    return true;
+}
+
+void LoadAvDatabaseFromDiskWithRecovery() {
+    EnsureAvDatabaseFileExists();
+
+    std::wstring error;
+    if (LoadAvDatabaseFile(AvDatabasePath(), error)) {
+        return;
+    }
+
+    WriteLog(L"Primary AV database load failed: " + error);
+    if (error.find(L"manifest signature") != std::wstring::npos && NetworkAvailableForAvUpdates()) {
+        WriteLog(L"Manifest signature is invalid, forcing AV database update");
+        if (UpdateAvDatabaseFromServer()) {
+            return;
+        }
+    }
+
+    if (RestoreAvDatabaseFromBackup()) {
+        WriteLog(L"AV database restored from backup");
+        return;
+    }
+
+    WriteLog(L"Backup AV database is unavailable or damaged, loading default database");
+    LoadDefaultAvDatabase();
+}
+
+DWORD WINAPI DatabaseUpdateThreadProc(void*) {
+    while (WaitForSingleObject(g_stop_event, kDatabaseUpdateIntervalSeconds * 1000) == WAIT_TIMEOUT) {
+        UpdateAvDatabaseFromServer();
+    }
+    return 0;
 }
 
 void BuildAhoCorasickAutomaton() {
@@ -426,17 +803,12 @@ void BuildAhoCorasickAutomaton() {
 
 void LoadAvDatabaseIfNeeded() {
     EnterCriticalSection(&g_av_lock);
-    if (!g_av_database.loaded) {
-        g_av_database.release_date = L"2026-05-17";
-        g_av_database.records.clear();
-        g_av_database.all_records.clear();
-        AddAvRecord(MakeAvRecord("EICAR-ZIOVPO-PE", ObjectType::PeFile, 0, 1024 * 1024, L"Demo.PE.EicarZIOVPO"));
-        AddAvRecord(MakeAvRecord("ZIOVPO-SCRIPT-MALWARE", ObjectType::Script, 0, 1024 * 1024, L"Demo.Script.ZIOVPO"));
-        BuildAhoCorasickAutomaton();
-        g_av_database.loaded = true;
-        WriteLog(L"AV database loaded, records=" + std::to_wstring(g_av_database.records.size()));
-    }
+    bool loaded = g_av_database.loaded;
     LeaveCriticalSection(&g_av_lock);
+
+    if (!loaded) {
+        LoadAvDatabaseFromDiskWithRecovery();
+    }
 }
 
 size_t GetAvRecordCountUnlocked() {
@@ -1494,6 +1866,8 @@ void WINAPI ServiceMain(DWORD, LPWSTR*) {
     g_refresh_thread = CreateThread(nullptr, 0, RefreshThreadProc, nullptr, 0, nullptr);
     g_schedule_thread = CreateThread(nullptr, 0, ScheduleThreadProc, nullptr, 0, nullptr);
     g_monitor_thread = CreateThread(nullptr, 0, MonitorThreadProc, nullptr, 0, nullptr);
+    LoadAvDatabaseIfNeeded();
+    g_database_update_thread = CreateThread(nullptr, 0, DatabaseUpdateThreadProc, nullptr, 0, nullptr);
 
     SetServiceState(SERVICE_RUNNING);
     WriteLog(L"Service is running");
@@ -1511,6 +1885,11 @@ void WINAPI ServiceMain(DWORD, LPWSTR*) {
         WaitForSingleObject(g_refresh_thread, 3000);
         CloseHandle(g_refresh_thread);
         g_refresh_thread = nullptr;
+    }
+    if (g_database_update_thread) {
+        WaitForSingleObject(g_database_update_thread, 3000);
+        CloseHandle(g_database_update_thread);
+        g_database_update_thread = nullptr;
     }
     if (g_monitor_stop_event) {
         SetEvent(g_monitor_stop_event);

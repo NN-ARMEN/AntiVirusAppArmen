@@ -2,9 +2,9 @@ name: Windows build
 
 on:
   push:
-    branches: ["main", "practice-1-tray-app", "practice-2-service", "practice-3-auth-license", "practice-4-av-engine"]
+    branches: ["main", "practice-1-tray-app", "practice-2-service", "practice-3-auth-license", "practice-4-av-engine", "practice-5-av-db-storage"]
   pull_request:
-    branches: ["main", "practice-1-tray-app", "practice-2-service", "practice-3-auth-license"]
+    branches: ["main", "practice-1-tray-app", "practice-2-service", "practice-3-auth-license", "practice-4-av-engine"]
   workflow_dispatch:
 
 jobs:
