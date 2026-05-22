@@ -742,7 +742,7 @@ DWORD WINAPI MonitorThreadProc(void*) {
             FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
             nullptr,
             OPEN_EXISTING,
-            FILE_FLAG_BACKUP_SEMANTICS,
+            FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OVERLAPPED,
             nullptr
         );
         if (directory == INVALID_HANDLE_VALUE) {
@@ -752,6 +752,13 @@ DWORD WINAPI MonitorThreadProc(void*) {
 
         unsigned char buffer[4096]{};
         DWORD bytes_returned = 0;
+        OVERLAPPED overlapped{};
+        overlapped.hEvent = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+        if (!overlapped.hEvent) {
+            CloseHandle(directory);
+            continue;
+        }
+
         BOOL ok = ReadDirectoryChangesW(
             directory,
             buffer,
@@ -759,14 +766,35 @@ DWORD WINAPI MonitorThreadProc(void*) {
             TRUE,
             FILE_NOTIFY_CHANGE_FILE_NAME | FILE_NOTIFY_CHANGE_LAST_WRITE | FILE_NOTIFY_CHANGE_CREATION,
             &bytes_returned,
-            nullptr,
+            &overlapped,
             nullptr
         );
-        CloseHandle(directory);
 
-        if (!ok || bytes_returned == 0) {
+        if (!ok && GetLastError() != ERROR_IO_PENDING) {
+            CloseHandle(overlapped.hEvent);
+            CloseHandle(directory);
             continue;
         }
+
+        HANDLE waitHandles[] = {g_monitor_stop_event, overlapped.hEvent};
+        DWORD waitResult = WaitForMultipleObjects(2, waitHandles, FALSE, INFINITE);
+        if (waitResult == WAIT_OBJECT_0) {
+            CancelIo(directory);
+            CloseHandle(overlapped.hEvent);
+            CloseHandle(directory);
+            break;
+        }
+
+        if (waitResult != WAIT_OBJECT_0 + 1 ||
+            !GetOverlappedResult(directory, &overlapped, &bytes_returned, FALSE) ||
+            bytes_returned == 0) {
+            CloseHandle(overlapped.hEvent);
+            CloseHandle(directory);
+            continue;
+        }
+
+        CloseHandle(overlapped.hEvent);
+        CloseHandle(directory);
 
         std::wstring result;
         std::wstring error;
@@ -1720,7 +1748,7 @@ extern "C" long ConfigureDirectoryMonitoring(const wchar_t* path, wchar_t** erro
 
     EnterCriticalSection(&g_schedule_lock);
     g_monitor_path = path;
-    g_monitor_last_result.clear();
+    g_monitor_last_result = L"Directory monitoring configured for: " + g_monitor_path;
     LeaveCriticalSection(&g_schedule_lock);
 
     *errorMessage = RpcCopyString(L"");
