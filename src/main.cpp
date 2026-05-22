@@ -601,7 +601,7 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lpara
     switch (message) {
     case WM_CREATE:
         AddMainWindowControls(hwnd);
-        SetTimer(hwnd, kTimerRefreshState, 15000, nullptr);
+        SetTimer(hwnd, kTimerRefreshState, 1000, nullptr);
         RefreshApplicationState();
         return 0;
 
