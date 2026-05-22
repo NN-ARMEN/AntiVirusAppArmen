@@ -35,4 +35,6 @@ interface ZIOVPOControl
                                 [out, string] wchar_t** errorMessage);
     long ConfigureDirectoryMonitoring([in, string] const wchar_t* path,
                                       [out, string] wchar_t** errorMessage);
+    long GetDirectoryMonitoringResult([out, string] wchar_t** result,
+                                      [out, string] wchar_t** errorMessage);
 }

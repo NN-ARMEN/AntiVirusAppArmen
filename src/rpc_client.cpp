@@ -387,6 +387,34 @@ long RpcConfigureDirectoryMonitoring(const std::wstring& path, std::wstring& err
     return result;
 }
 
+long RpcGetDirectoryMonitoringResult(std::wstring& resultText, std::wstring& error) {
+    if (!EnsureBinding()) {
+        return RPC_S_SERVER_UNAVAILABLE;
+    }
+
+    wchar_t* resultBuffer = nullptr;
+    wchar_t* errorBuffer = nullptr;
+    long result = 0;
+    RpcTryExcept {
+        result = GetDirectoryMonitoringResult(&resultBuffer, &errorBuffer);
+    }
+    RpcExcept(1) {
+        result = static_cast<long>(RpcExceptionCode());
+        DropBinding();
+    }
+    RpcEndExcept
+
+    resultText = resultBuffer ? resultBuffer : L"";
+    error = errorBuffer ? errorBuffer : L"";
+    if (resultBuffer) {
+        midl_user_free(resultBuffer);
+    }
+    if (errorBuffer) {
+        midl_user_free(errorBuffer);
+    }
+    return result;
+}
+
 extern "C" void* __RPC_USER midl_user_allocate(size_t size) {
     return malloc(size);
 }

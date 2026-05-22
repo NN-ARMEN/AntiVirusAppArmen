@@ -1727,6 +1727,21 @@ extern "C" long ConfigureDirectoryMonitoring(const wchar_t* path, wchar_t** erro
     return *errorMessage ? 0 : ERROR_OUTOFMEMORY;
 }
 
+extern "C" long GetDirectoryMonitoringResult(wchar_t** result, wchar_t** errorMessage) {
+    if (!result || !errorMessage) {
+        return ERROR_INVALID_PARAMETER;
+    }
+
+    std::wstring lastResult;
+    EnterCriticalSection(&g_schedule_lock);
+    lastResult = g_monitor_last_result;
+    LeaveCriticalSection(&g_schedule_lock);
+
+    *result = RpcCopyString(lastResult);
+    *errorMessage = RpcCopyString(L"");
+    return *result && *errorMessage ? 0 : ERROR_OUTOFMEMORY;
+}
+
 extern "C" void* __RPC_USER midl_user_allocate(size_t size) {
     return malloc(size);
 }

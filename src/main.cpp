@@ -24,6 +24,7 @@ long RpcScanFixedDrives(std::wstring& resultText, std::wstring& error);
 long RpcConfigureScheduleScan(long intervalMinutes, const std::wstring& path, std::wstring& error);
 long RpcGetScheduledScanResult(std::wstring& resultText, std::wstring& error);
 long RpcConfigureDirectoryMonitoring(const std::wstring& path, std::wstring& error);
+long RpcGetDirectoryMonitoringResult(std::wstring& resultText, std::wstring& error);
 
 namespace {
 
@@ -82,6 +83,8 @@ bool g_authenticated = false;
 bool g_has_license = false;
 bool g_schedule_configured = false;
 std::wstring g_last_schedule_result;
+bool g_monitor_configured = false;
+std::wstring g_last_monitor_result;
 
 std::wstring GetExecutableDirectory() {
     wchar_t path[MAX_PATH]{};
@@ -203,6 +206,16 @@ void RefreshApplicationState() {
             SetText(g_scan_result_label, L"Scheduled scan result:\r\n" + scheduledResult);
         }
     }
+
+    if (g_authenticated && g_has_license && g_monitor_configured) {
+        std::wstring monitorResult;
+        std::wstring monitorError;
+        long monitorCode = RpcGetDirectoryMonitoringResult(monitorResult, monitorError);
+        if (monitorCode == 0 && !monitorResult.empty() && monitorResult != g_last_monitor_result) {
+            g_last_monitor_result = monitorResult;
+            SetText(g_scan_result_label, L"Monitor scan result:\r\n" + monitorResult);
+        }
+    }
 }
 
 void HandleLogin() {
@@ -317,7 +330,11 @@ void HandleScheduleScan() {
 void HandleMonitorFolder() {
     std::wstring error;
     long result = RpcConfigureDirectoryMonitoring(GetWindowTextValue(g_scan_path_edit), error);
-    SetScanResult(result, L"Directory monitoring configured", error);
+    if (result == 0) {
+        g_monitor_configured = true;
+        g_last_monitor_result.clear();
+    }
+    SetScanResult(result, L"Directory monitoring configured. Result will appear here after file changes.", error);
 }
 
 DWORD GetParentProcessId() {
@@ -549,7 +566,20 @@ void AddMainWindowControls(HWND hwnd) {
     g_scan_drives_button = CreateWindowExW(0, L"BUTTON", L"Scan drives", WS_CHILD | WS_VISIBLE | WS_TABSTOP, 230, 366, 100, 30, hwnd, reinterpret_cast<HMENU>(kScanDrivesButtonId), g_instance, nullptr);
     g_schedule_button = CreateWindowExW(0, L"BUTTON", L"Schedule", WS_CHILD | WS_VISIBLE | WS_TABSTOP, 340, 366, 90, 30, hwnd, reinterpret_cast<HMENU>(kScheduleButtonId), g_instance, nullptr);
     g_monitor_button = CreateWindowExW(0, L"BUTTON", L"Monitor", WS_CHILD | WS_VISIBLE | WS_TABSTOP, 440, 366, 90, 30, hwnd, reinterpret_cast<HMENU>(kMonitorButtonId), g_instance, nullptr);
-    g_scan_result_label = CreateWindowExW(0, L"STATIC", L"Scan result", WS_CHILD | WS_VISIBLE, 20, 410, 600, 90, hwnd, nullptr, g_instance, nullptr);
+    g_scan_result_label = CreateWindowExW(
+        WS_EX_CLIENTEDGE,
+        L"EDIT",
+        L"Scan result",
+        WS_CHILD | WS_VISIBLE | WS_VSCROLL | ES_LEFT | ES_MULTILINE | ES_AUTOVSCROLL | ES_READONLY,
+        20,
+        410,
+        620,
+        120,
+        hwnd,
+        nullptr,
+        g_instance,
+        nullptr
+    );
 }
 
 LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam) {
@@ -688,7 +718,7 @@ HWND CreateMainWindow() {
         CW_USEDEFAULT,
         CW_USEDEFAULT,
         680,
-        560,
+        590,
         nullptr,
         nullptr,
         g_instance,
