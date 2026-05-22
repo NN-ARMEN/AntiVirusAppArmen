@@ -51,6 +51,7 @@ constexpr int kScanFolderButtonId = 60012;
 constexpr int kScanDrivesButtonId = 60013;
 constexpr int kScheduleButtonId = 60014;
 constexpr int kMonitorButtonId = 60015;
+constexpr int kScheduleIntervalEditId = 60016;
 
 HINSTANCE g_instance = nullptr;
 HWND g_main_window = nullptr;
@@ -78,6 +79,7 @@ HWND g_scan_folder_button = nullptr;
 HWND g_scan_drives_button = nullptr;
 HWND g_schedule_button = nullptr;
 HWND g_monitor_button = nullptr;
+HWND g_schedule_interval_edit = nullptr;
 HWND g_scan_result_label = nullptr;
 bool g_authenticated = false;
 bool g_has_license = false;
@@ -195,6 +197,7 @@ void RefreshApplicationState() {
     SetVisible(g_scan_drives_button, g_authenticated && g_has_license);
     SetVisible(g_schedule_button, g_authenticated && g_has_license);
     SetVisible(g_monitor_button, g_authenticated && g_has_license);
+    SetVisible(g_schedule_interval_edit, g_authenticated && g_has_license);
     SetVisible(g_scan_result_label, g_authenticated && g_has_license);
 
     if (g_authenticated && g_has_license && g_schedule_configured) {
@@ -319,12 +322,18 @@ void HandleScanDrives() {
 
 void HandleScheduleScan() {
     std::wstring error;
-    long result = RpcConfigureScheduleScan(1, GetWindowTextValue(g_scan_path_edit), error);
+    long interval = wcstol(GetWindowTextValue(g_schedule_interval_edit).c_str(), nullptr, 10);
+    if (interval <= 0) {
+        interval = 1;
+        SetWindowTextW(g_schedule_interval_edit, L"1");
+    }
+
+    long result = RpcConfigureScheduleScan(interval, GetWindowTextValue(g_scan_path_edit), error);
     if (result == 0) {
         g_schedule_configured = true;
         g_last_schedule_result.clear();
     }
-    SetScanResult(result, L"Scheduled scan configured: every 1 minute. Result will appear here after the next run.", error);
+    SetScanResult(result, L"Scheduled scan configured: every " + std::to_wstring(interval) + L" minute(s). Result will appear here after the next run.", error);
 }
 
 void HandleMonitorFolder() {
@@ -564,8 +573,9 @@ void AddMainWindowControls(HWND hwnd) {
     g_scan_file_button = CreateWindowExW(0, L"BUTTON", L"Scan file", WS_CHILD | WS_VISIBLE | WS_TABSTOP, 20, 366, 90, 30, hwnd, reinterpret_cast<HMENU>(kScanFileButtonId), g_instance, nullptr);
     g_scan_folder_button = CreateWindowExW(0, L"BUTTON", L"Scan folder", WS_CHILD | WS_VISIBLE | WS_TABSTOP, 120, 366, 100, 30, hwnd, reinterpret_cast<HMENU>(kScanFolderButtonId), g_instance, nullptr);
     g_scan_drives_button = CreateWindowExW(0, L"BUTTON", L"Scan drives", WS_CHILD | WS_VISIBLE | WS_TABSTOP, 230, 366, 100, 30, hwnd, reinterpret_cast<HMENU>(kScanDrivesButtonId), g_instance, nullptr);
-    g_schedule_button = CreateWindowExW(0, L"BUTTON", L"Schedule", WS_CHILD | WS_VISIBLE | WS_TABSTOP, 340, 366, 90, 30, hwnd, reinterpret_cast<HMENU>(kScheduleButtonId), g_instance, nullptr);
-    g_monitor_button = CreateWindowExW(0, L"BUTTON", L"Monitor", WS_CHILD | WS_VISIBLE | WS_TABSTOP, 440, 366, 90, 30, hwnd, reinterpret_cast<HMENU>(kMonitorButtonId), g_instance, nullptr);
+    g_schedule_interval_edit = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", L"1", WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_NUMBER | ES_AUTOHSCROLL, 340, 368, 42, 26, hwnd, reinterpret_cast<HMENU>(kScheduleIntervalEditId), g_instance, nullptr);
+    g_schedule_button = CreateWindowExW(0, L"BUTTON", L"Schedule", WS_CHILD | WS_VISIBLE | WS_TABSTOP, 390, 366, 90, 30, hwnd, reinterpret_cast<HMENU>(kScheduleButtonId), g_instance, nullptr);
+    g_monitor_button = CreateWindowExW(0, L"BUTTON", L"Monitor", WS_CHILD | WS_VISIBLE | WS_TABSTOP, 490, 366, 90, 30, hwnd, reinterpret_cast<HMENU>(kMonitorButtonId), g_instance, nullptr);
     g_scan_result_label = CreateWindowExW(
         WS_EX_CLIENTEDGE,
         L"EDIT",
