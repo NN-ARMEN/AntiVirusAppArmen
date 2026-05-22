@@ -8,6 +8,7 @@
 
 #include <algorithm>
 #include <array>
+#include <deque>
 #include <cstdint>
 #include <malloc.h>
 #include <fstream>
@@ -65,6 +66,7 @@ enum class ObjectType : unsigned char {
 struct AvRecord {
     uint64_t prefix = 0;
     uint32_t length = 0;
+    std::vector<unsigned char> signature_bytes;
     std::array<unsigned char, 32> signature_hash{};
     uint64_t offset_begin = 0;
     uint64_t offset_end = 0;
@@ -73,10 +75,18 @@ struct AvRecord {
     std::wstring name;
 };
 
+struct AhoNode {
+    std::map<unsigned char, size_t> next;
+    size_t failure = 0;
+    std::vector<size_t> outputs;
+};
+
 struct AvDatabase {
     bool loaded = false;
     std::wstring release_date;
     std::map<uint64_t, std::vector<AvRecord>> records;
+    std::vector<AvRecord> all_records;
+    std::vector<AhoNode> aho_nodes;
 };
 
 struct ScheduleState {
@@ -347,6 +357,7 @@ AvRecord MakeAvRecord(const char* signature, ObjectType object_type, uint64_t of
     AvRecord record;
     record.prefix = ReadPrefix(signature_bytes.data());
     record.length = static_cast<uint32_t>(signature_bytes.size());
+    record.signature_bytes = signature_bytes;
     record.signature_hash = Sha256(signature_bytes);
     record.offset_begin = offset_begin;
     record.offset_end = offset_end;
@@ -358,6 +369,59 @@ AvRecord MakeAvRecord(const char* signature, ObjectType object_type, uint64_t of
 
 void AddAvRecord(const AvRecord& record) {
     g_av_database.records[record.prefix].push_back(record);
+    g_av_database.all_records.push_back(record);
+}
+
+void BuildAhoCorasickAutomaton() {
+    g_av_database.aho_nodes.clear();
+    g_av_database.aho_nodes.push_back(AhoNode{});
+
+    for (size_t recordIndex = 0; recordIndex < g_av_database.all_records.size(); ++recordIndex) {
+        const std::vector<unsigned char>& pattern = g_av_database.all_records[recordIndex].signature_bytes;
+        size_t state = 0;
+        for (unsigned char byte : pattern) {
+            auto [it, inserted] = g_av_database.aho_nodes[state].next.emplace(byte, g_av_database.aho_nodes.size());
+            if (inserted) {
+                g_av_database.aho_nodes.push_back(AhoNode{});
+            }
+            state = it->second;
+        }
+        g_av_database.aho_nodes[state].outputs.push_back(recordIndex);
+    }
+
+    std::deque<size_t> queue;
+    for (const auto& [byte, nextState] : g_av_database.aho_nodes[0].next) {
+        UNREFERENCED_PARAMETER(byte);
+        g_av_database.aho_nodes[nextState].failure = 0;
+        queue.push_back(nextState);
+    }
+
+    while (!queue.empty()) {
+        size_t state = queue.front();
+        queue.pop_front();
+
+        for (const auto& [byte, nextState] : g_av_database.aho_nodes[state].next) {
+            size_t failure = g_av_database.aho_nodes[state].failure;
+            while (failure != 0 && g_av_database.aho_nodes[failure].next.find(byte) == g_av_database.aho_nodes[failure].next.end()) {
+                failure = g_av_database.aho_nodes[failure].failure;
+            }
+
+            auto failureTransition = g_av_database.aho_nodes[failure].next.find(byte);
+            if (failureTransition != g_av_database.aho_nodes[failure].next.end() && failureTransition->second != nextState) {
+                g_av_database.aho_nodes[nextState].failure = failureTransition->second;
+            } else {
+                g_av_database.aho_nodes[nextState].failure = 0;
+            }
+
+            const std::vector<size_t>& failureOutputs = g_av_database.aho_nodes[g_av_database.aho_nodes[nextState].failure].outputs;
+            g_av_database.aho_nodes[nextState].outputs.insert(
+                g_av_database.aho_nodes[nextState].outputs.end(),
+                failureOutputs.begin(),
+                failureOutputs.end()
+            );
+            queue.push_back(nextState);
+        }
+    }
 }
 
 void LoadAvDatabaseIfNeeded() {
@@ -365,8 +429,10 @@ void LoadAvDatabaseIfNeeded() {
     if (!g_av_database.loaded) {
         g_av_database.release_date = L"2026-05-17";
         g_av_database.records.clear();
+        g_av_database.all_records.clear();
         AddAvRecord(MakeAvRecord("EICAR-ZIOVPO-PE", ObjectType::PeFile, 0, 1024 * 1024, L"Demo.PE.EicarZIOVPO"));
         AddAvRecord(MakeAvRecord("ZIOVPO-SCRIPT-MALWARE", ObjectType::Script, 0, 1024 * 1024, L"Demo.Script.ZIOVPO"));
+        BuildAhoCorasickAutomaton();
         g_av_database.loaded = true;
         WriteLog(L"AV database loaded, records=" + std::to_wstring(g_av_database.records.size()));
     }
@@ -436,35 +502,48 @@ bool ReadFileBytes(const std::wstring& path, std::vector<unsigned char>& bytes, 
 
 bool ScanBytes(const std::wstring& path, const std::vector<unsigned char>& bytes, std::wstring& detection) {
     detection.clear();
-    if (bytes.size() < 8) {
+    if (bytes.empty()) {
         return false;
     }
 
     ObjectType object_type = DetectObjectType(path, bytes);
-    for (size_t position = 0; position + 8 <= bytes.size(); ++position) {
-        uint64_t prefix = ReadPrefix(bytes.data() + position);
+    size_t state = 0;
+
+    for (size_t position = 0; position < bytes.size(); ++position) {
+        unsigned char byte = bytes[position];
 
         EnterCriticalSection(&g_av_lock);
-        auto it = g_av_database.records.find(prefix);
-        std::vector<AvRecord> candidates = it == g_av_database.records.end() ? std::vector<AvRecord>{} : it->second;
+        while (state != 0 && g_av_database.aho_nodes[state].next.find(byte) == g_av_database.aho_nodes[state].next.end()) {
+            state = g_av_database.aho_nodes[state].failure;
+        }
+        auto transition = g_av_database.aho_nodes[state].next.find(byte);
+        if (transition != g_av_database.aho_nodes[state].next.end()) {
+            state = transition->second;
+        }
+        std::vector<AvRecord> candidates;
+        for (size_t recordIndex : g_av_database.aho_nodes[state].outputs) {
+            if (recordIndex < g_av_database.all_records.size()) {
+                candidates.push_back(g_av_database.all_records[recordIndex]);
+            }
+        }
         LeaveCriticalSection(&g_av_lock);
 
-        if (candidates.empty()) {
-            continue;
-        }
-
         for (const AvRecord& record : candidates) {
+            if (position + 1 < record.length) {
+                continue;
+            }
+            size_t start = position + 1 - record.length;
             if (record.object_type != object_type) {
                 continue;
             }
-            if (position < record.offset_begin || position > record.offset_end) {
+            if (start < record.offset_begin || start > record.offset_end) {
                 continue;
             }
-            if (position + record.length > bytes.size()) {
+            if (start + record.length > bytes.size()) {
                 continue;
             }
 
-            std::vector<unsigned char> signature(bytes.begin() + position, bytes.begin() + position + record.length);
+            std::vector<unsigned char> signature(bytes.begin() + start, bytes.begin() + start + record.length);
             if (Sha256(signature) == record.signature_hash) {
                 detection = record.name;
                 return true;
