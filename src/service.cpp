@@ -509,7 +509,16 @@ void AppendScanLine(std::wstringstream& report, const std::wstring& path, bool i
     report << L"\r\n";
 }
 
-void ScanDirectoryRecursive(const std::wstring& path, std::wstringstream& report, long& scanned, long& infectedCount) {
+void ScanDirectoryRecursive(
+    const std::wstring& path,
+    std::wstringstream& report,
+    long& scanned,
+    long& infectedCount,
+    long maxFiles = 0) {
+    if (maxFiles > 0 && scanned >= maxFiles) {
+        return;
+    }
+
     std::wstring mask = path + L"\\*";
     WIN32_FIND_DATAW data{};
     HANDLE find = FindFirstFileW(mask.c_str(), &data);
@@ -523,8 +532,11 @@ void ScanDirectoryRecursive(const std::wstring& path, std::wstringstream& report
         }
         std::wstring child = path + L"\\" + data.cFileName;
         if (data.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) {
-            ScanDirectoryRecursive(child, report, scanned, infectedCount);
+            ScanDirectoryRecursive(child, report, scanned, infectedCount, maxFiles);
             continue;
+        }
+        if (maxFiles > 0 && scanned >= maxFiles) {
+            break;
         }
 
         bool infected = false;
@@ -537,7 +549,7 @@ void ScanDirectoryRecursive(const std::wstring& path, std::wstringstream& report
                 AppendScanLine(report, child, true, detection);
             }
         }
-    } while (FindNextFileW(find, &data));
+    } while ((maxFiles <= 0 || scanned < maxFiles) && FindNextFileW(find, &data));
 
     FindClose(find);
 }
@@ -570,6 +582,7 @@ long ScanAllFixedDrivesInternal(std::wstring& result, std::wstring& error) {
         return ERROR_NOT_READY;
     }
 
+    constexpr long kMaxFilesPerDriveForUiScan = 200;
     long totalScanned = 0;
     long totalInfected = 0;
     std::wstringstream report;
@@ -580,13 +593,16 @@ long ScanAllFixedDrivesInternal(std::wstring& result, std::wstring& error) {
 
         long scanned = 0;
         long infected = 0;
-        report << L"Drive " << drive << L"\r\n";
-        ScanDirectoryRecursive(drive, report, scanned, infected);
+        report << L"Drive " << drive << L" (demo limit " << kMaxFilesPerDriveForUiScan << L" files)\r\n";
+        ScanDirectoryRecursive(drive, report, scanned, infected, kMaxFilesPerDriveForUiScan);
         totalScanned += scanned;
         totalInfected += infected;
     }
 
-    result = L"Fixed drives scanned files: " + std::to_wstring(totalScanned) + L", infected: " + std::to_wstring(totalInfected) + L"\r\n" + report.str();
+    result = L"Fixed drives scanned files: " + std::to_wstring(totalScanned) +
+        L", infected: " + std::to_wstring(totalInfected) +
+        L", per-drive demo limit: " + std::to_wstring(kMaxFilesPerDriveForUiScan) +
+        L"\r\n" + report.str();
     error.clear();
     return 0;
 }
