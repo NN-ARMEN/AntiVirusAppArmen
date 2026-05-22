@@ -1619,6 +1619,21 @@ extern "C" long ConfigureScheduleScan(long intervalMinutes, const wchar_t* path,
     return *errorMessage ? 0 : ERROR_OUTOFMEMORY;
 }
 
+extern "C" long GetScheduledScanResult(wchar_t** result, wchar_t** errorMessage) {
+    if (!result || !errorMessage) {
+        return ERROR_INVALID_PARAMETER;
+    }
+
+    std::wstring lastResult;
+    EnterCriticalSection(&g_schedule_lock);
+    lastResult = g_schedule.last_result;
+    LeaveCriticalSection(&g_schedule_lock);
+
+    *result = RpcCopyString(lastResult);
+    *errorMessage = RpcCopyString(L"");
+    return *result && *errorMessage ? 0 : ERROR_OUTOFMEMORY;
+}
+
 extern "C" long ConfigureDirectoryMonitoring(const wchar_t* path, wchar_t** errorMessage) {
     if (!path || !errorMessage) {
         return ERROR_INVALID_PARAMETER;

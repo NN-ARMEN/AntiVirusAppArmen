@@ -31,6 +31,8 @@ interface ZIOVPOControl
     long ConfigureScheduleScan([in] long intervalMinutes,
                                [in, string] const wchar_t* path,
                                [out, string] wchar_t** errorMessage);
+    long GetScheduledScanResult([out, string] wchar_t** result,
+                                [out, string] wchar_t** errorMessage);
     long ConfigureDirectoryMonitoring([in, string] const wchar_t* path,
                                       [out, string] wchar_t** errorMessage);
 }

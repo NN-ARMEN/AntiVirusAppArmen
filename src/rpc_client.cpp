@@ -336,6 +336,34 @@ long RpcConfigureScheduleScan(long intervalMinutes, const std::wstring& path, st
     return result;
 }
 
+long RpcGetScheduledScanResult(std::wstring& resultText, std::wstring& error) {
+    if (!EnsureBinding()) {
+        return RPC_S_SERVER_UNAVAILABLE;
+    }
+
+    wchar_t* resultBuffer = nullptr;
+    wchar_t* errorBuffer = nullptr;
+    long result = 0;
+    RpcTryExcept {
+        result = GetScheduledScanResult(&resultBuffer, &errorBuffer);
+    }
+    RpcExcept(1) {
+        result = static_cast<long>(RpcExceptionCode());
+        DropBinding();
+    }
+    RpcEndExcept
+
+    resultText = resultBuffer ? resultBuffer : L"";
+    error = errorBuffer ? errorBuffer : L"";
+    if (resultBuffer) {
+        midl_user_free(resultBuffer);
+    }
+    if (errorBuffer) {
+        midl_user_free(errorBuffer);
+    }
+    return result;
+}
+
 long RpcConfigureDirectoryMonitoring(const std::wstring& path, std::wstring& error) {
     if (!EnsureBinding()) {
         return RPC_S_SERVER_UNAVAILABLE;

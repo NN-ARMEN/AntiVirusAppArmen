@@ -22,6 +22,7 @@ long RpcScanFile(const std::wstring& path, std::wstring& resultText, std::wstrin
 long RpcScanDirectory(const std::wstring& path, std::wstring& resultText, std::wstring& error);
 long RpcScanFixedDrives(std::wstring& resultText, std::wstring& error);
 long RpcConfigureScheduleScan(long intervalMinutes, const std::wstring& path, std::wstring& error);
+long RpcGetScheduledScanResult(std::wstring& resultText, std::wstring& error);
 long RpcConfigureDirectoryMonitoring(const std::wstring& path, std::wstring& error);
 
 namespace {
@@ -79,6 +80,8 @@ HWND g_monitor_button = nullptr;
 HWND g_scan_result_label = nullptr;
 bool g_authenticated = false;
 bool g_has_license = false;
+bool g_schedule_configured = false;
+std::wstring g_last_schedule_result;
 
 std::wstring GetExecutableDirectory() {
     wchar_t path[MAX_PATH]{};
@@ -190,6 +193,16 @@ void RefreshApplicationState() {
     SetVisible(g_schedule_button, g_authenticated && g_has_license);
     SetVisible(g_monitor_button, g_authenticated && g_has_license);
     SetVisible(g_scan_result_label, g_authenticated && g_has_license);
+
+    if (g_authenticated && g_has_license && g_schedule_configured) {
+        std::wstring scheduledResult;
+        std::wstring scheduledError;
+        long scheduledCode = RpcGetScheduledScanResult(scheduledResult, scheduledError);
+        if (scheduledCode == 0 && !scheduledResult.empty() && scheduledResult != g_last_schedule_result) {
+            g_last_schedule_result = scheduledResult;
+            SetText(g_scan_result_label, L"Scheduled scan result:\r\n" + scheduledResult);
+        }
+    }
 }
 
 void HandleLogin() {
@@ -294,7 +307,11 @@ void HandleScanDrives() {
 void HandleScheduleScan() {
     std::wstring error;
     long result = RpcConfigureScheduleScan(1, GetWindowTextValue(g_scan_path_edit), error);
-    SetScanResult(result, L"Scheduled scan configured: every 1 minute", error);
+    if (result == 0) {
+        g_schedule_configured = true;
+        g_last_schedule_result.clear();
+    }
+    SetScanResult(result, L"Scheduled scan configured: every 1 minute. Result will appear here after the next run.", error);
 }
 
 void HandleMonitorFolder() {
