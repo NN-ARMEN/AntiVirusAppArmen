@@ -3,17 +3,22 @@
 #include <rpc.h>
 #include <rpcdce.h>
 
-#define AVAA_RPC_UUID \
-    {0x12345678, 0x1234, 0x1234, {0x12, 0x34, 0x12, 0x34, 0x56, 0x78, 0x9A, 0xBC}}
-
 #define RPC_PROTOCOL L"ncalrpc"
 #define RPC_ENDPOINT L"AVAA_RPC"
 
-// RPC функции
+// Существующие функции
 void StopService(void);
 int GetServiceStatus(void);
 void RegisterClient(long sessionId, long processId);
 void UnregisterClient(long processId);
+
+// Новые функции для аутентификации и лицензирования
+void AuthLogin(const char* username, const char* password, BOOL* success, char* errorMessage, int errorSize);
+void AuthLogout(BOOL* success);
+void GetCurrentUser(char* username, int usernameSize, BOOL* isAuthenticated);
+void GetLicenseStatus(char* status, int statusSize, BOOL* isValid, DWORD* validUntil);
+void ActivateProduct(const char* activationCode, BOOL* success, char* errorMessage, int errorSize);
+BOOL HasValidLicense(void);
 
 // Клиентские функции
 BOOL CreateRpcBinding(void);
@@ -22,6 +27,14 @@ BOOL CallStopService(void);
 int CallGetServiceStatus(void);
 void CallRegisterClient(long sessionId, long processId);
 void CallUnregisterClient(long processId);
+
+// Клиентские функции для аутентификации
+BOOL CallAuthLogin(const char* username, const char* password, char* errorMessage, int errorSize);
+void CallAuthLogout(void);
+BOOL CallGetCurrentUser(char* username, int usernameSize, BOOL* isAuthenticated);
+BOOL CallGetLicenseStatus(char* status, int statusSize, BOOL* isValid, DWORD* validUntil);
+BOOL CallActivateProduct(const char* activationCode, char* errorMessage, int errorSize);
+BOOL CallHasValidLicense(void);
 
 // Серверные функции
 BOOL StartRpcServer(HANDLE hStopEvent);

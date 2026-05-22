@@ -4,10 +4,11 @@ project(AVAA VERSION 1.0.0 LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
-# Графическое приложение (с rpc_client.cpp)
+# Графическое приложение (с заглушками)
 add_executable(AVAA WIN32
     src/main.cpp
-    src/rpc_client.cpp
+    src/rpc_client_only.cpp
+    src/rpc_stubs.cpp
     src/rpc_interface.h
 )
 
@@ -16,6 +17,9 @@ add_executable(AVAAService
     src/service.cpp
     src/rpc_server.cpp
     src/rpc_interface.h
+    src/auth.cpp
+    src/web_client.cpp
+    src/json_parser.cpp
 )
 
 # Подключение библиотек для AVAA
@@ -32,6 +36,7 @@ target_link_libraries(AVAAService
     userenv
     wtsapi32
     rpcrt4
+    winhttp
 )
 
 if(MSVC)

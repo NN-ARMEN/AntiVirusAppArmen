@@ -5,6 +5,7 @@
 #include <tlhelp32.h>
 #include <vector>
 #include <string>
+#include "auth.h"
 
 #pragma comment(lib, "advapi32.lib")
 #pragma comment(lib, "userenv.lib")
@@ -204,6 +205,9 @@ DWORD WINAPI RpcServerThread(LPVOID lpParam) {
 }
 
 DWORD WINAPI ServiceWorkerThread(LPVOID lpParam) {
+    // Инициализация системы аутентификации
+    InitAuthSystem();
+    
     g_hRpcThread = CreateThread(NULL, 0, RpcServerThread, NULL, 0, NULL);
     
     EnumerateAndStartClients();
@@ -217,6 +221,9 @@ DWORD WINAPI ServiceWorkerThread(LPVOID lpParam) {
     
     StopAllClients();
     StopRpcServer();
+    
+    // Очистка системы аутентификации
+    CleanupAuthSystem();
     
     if (g_hRpcThread) {
         WaitForSingleObject(g_hRpcThread, 5000);

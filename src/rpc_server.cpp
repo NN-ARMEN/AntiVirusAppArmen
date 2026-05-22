@@ -1,4 +1,5 @@
 #include "rpc_interface.h"
+#include "auth.h"
 #include <stdlib.h>
 
 HANDLE g_hStopEventForRPC = NULL;
@@ -11,6 +12,7 @@ void __RPC_USER MIDL_user_free(void* p) {
     free(p);
 }
 
+// Существующие RPC методы
 void StopService(void) {
     if (g_hStopEventForRPC) {
         SetEvent(g_hStopEventForRPC);
@@ -24,13 +26,20 @@ int GetServiceStatus(void) {
     return 0;
 }
 
-// Убираем RegisterClient и UnregisterClient отсюда - они в service.cpp
+// Регистрация клиента (реализация в service.cpp)
+void RegisterClient(long sessionId, long processId);
+void UnregisterClient(long processId);
 
+// Запуск RPC сервера
 BOOL StartRpcServer(HANDLE hStopEvent) {
     RPC_STATUS status;
     
     g_hStopEventForRPC = hStopEvent;
     
+    // Инициализируем систему аутентификации
+    InitAuthSystem();
+    
+    // Регистрация протокола ALPC (ncalrpc)
     status = RpcServerUseProtseqEpW(
         (RPC_WSTR)RPC_PROTOCOL,
         RPC_C_PROTSEQ_MAX_REQS_DEFAULT,
@@ -42,6 +51,7 @@ BOOL StartRpcServer(HANDLE hStopEvent) {
         return FALSE;
     }
     
+    // Регистрация интерфейса
     status = RpcServerRegisterIfEx(
         NULL,
         NULL,
@@ -55,12 +65,16 @@ BOOL StartRpcServer(HANDLE hStopEvent) {
         return FALSE;
     }
     
+    // Запуск прослушивания
     status = RpcServerListen(1, RPC_C_LISTEN_MAX_CALLS_DEFAULT, FALSE);
     
     return (status == RPC_S_OK);
 }
 
+// Остановка RPC сервера
 void StopRpcServer(void) {
+    StopBackgroundThreads();
+    CleanupAuthSystem();
     RpcMgmtStopServerListening(NULL);
     RpcServerUnregisterIf(NULL, NULL, FALSE);
 }
