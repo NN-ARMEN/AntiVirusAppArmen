@@ -11,6 +11,13 @@ Release/
 *.ilk
 *.exp
 
+# Installer temporary files
+InstallerPackage/
+*.msi
+*.wixobj
+*.wixpdb
+*.cab
+
 # IDE files
 .vs/
 .vscode/
@@ -31,14 +38,6 @@ Release/
 # Database files
 *.bin
 *.bak
-*.db
-
-# Sound files (optional, remove if you want to include)
-*.mp3
-*.wav
-
-# Icon files (create your own)
-*.ico
 
 # Generated RPC files
 rpc_gen/
