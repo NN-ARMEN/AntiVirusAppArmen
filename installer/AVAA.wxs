@@ -1,0 +1,120 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
+    <Product Id="*" 
+             Name="AVAA Antivirus" 
+             Language="1049" 
+             Version="1.0.0.0" 
+             Manufacturer="AVAA Team" 
+             UpgradeCode="12345678-1234-1234-1234-123456789ABC">
+        
+        <Package InstallerVersion="200" 
+                 Compressed="yes" 
+                 InstallScope="perMachine" 
+                 Platform="x64"/>
+        
+        <MajorUpgrade DowngradeErrorMessage="A newer version of AVAA is already installed."/>
+        
+        <Media Id="1" Cabinet="AVAA.cab" EmbedCab="yes"/>
+        
+        <!-- Определение условий установки -->
+        <Condition Message="This application requires Windows 10 or later.">
+            <![CDATA[VersionNT >= 603]]>
+        </Condition>
+        
+        <!-- Каталоги -->
+        <Directory Id="TARGETDIR" Name="SourceDir">
+            <Directory Id="ProgramFiles64Folder">
+                <Directory Id="INSTALLFOLDER" Name="AVAA">
+                    <!-- Основные исполняемые файлы -->
+                    <Component Id="MainExecutable" Guid="{12345678-1234-1234-1234-123456789001}">
+                        <File Id="AVAA.exe" Source="..\build\Release\AVAA.exe" KeyPath="yes"/>
+                    </Component>
+                    
+                    <Component Id="ServiceExecutable" Guid="{12345678-1234-1234-1234-123456789002}">
+                        <File Id="AVAAService.exe" Source="..\build\Release\AVAAService.exe" KeyPath="yes"/>
+                        <ServiceInstall Id="InstallAVAA Service" 
+                                        Name="AVAA_Service" 
+                                        DisplayName="AVAA Antivirus Service"
+                                        Description="Provides antivirus protection and RPC services"
+                                        Type="ownProcess" 
+                                        Start="auto" 
+                                        ErrorControl="normal"
+                                        Vital="yes"/>
+                        <ServiceControl Id="StartAVAA Service" 
+                                        Name="AVAA_Service" 
+                                        Start="install" 
+                                        Wait="no"/>
+                        <ServiceControl Id="StopAVAA Service" 
+                                        Name="AVAA_Service" 
+                                        Stop="both" 
+                                        Remove="uninstall" 
+                                        Wait="yes"/>
+                    </Component>
+                    
+                    <Component Id="MockLicenseServer" Guid="{12345678-1234-1234-1234-123456789003}">
+                        <File Id="AVAAMockLicenseServer.exe" Source="..\build\Release\AVAAMockLicenseServer.exe" KeyPath="yes"/>
+                    </Component>
+                    
+                    <!-- Ресурсы -->
+                    <Component Id="Resources" Guid="{12345678-1234-1234-1234-123456789004}">
+                        <File Id="AppRC" Source="..\resources\app.rc" KeyPath="yes"/>
+                    </Component>
+                    
+                    <!-- VC++ Redistributable (зависимость) -->
+                    <Component Id="VC_Redist" Guid="{12345678-1234-1234-1234-123456789005}">
+                        <File Id="vc_redist.x64.exe" 
+                              Source="C:\ProgramData\Microsoft\VisualStudio\Packages\Microsoft.VisualCpp.Redist.14.Latest,version=14.44.35225,chip=x64\VC_redist.x64.exe" 
+                              KeyPath="yes"
+                              Vital="yes">
+                            <Condition>NOT VC_REDIST_INSTALLED</Condition>
+                        </File>
+                    </Component>
+                </Directory>
+            </Directory>
+            
+            <!-- Меню Пуск -->
+            <Directory Id="ProgramMenuFolder">
+                <Directory Id="ApplicationProgramsFolder" Name="AVAA">
+                    <Component Id="ApplicationShortcut" Guid="{12345678-1234-1234-1234-123456789006}">
+                        <Shortcut Id="AVAShortcut" 
+                                  Name="AVAA Antivirus" 
+                                  Description="Launch AVAA Antivirus"
+                                  Target="[INSTALLFOLDER]AVAA.exe" 
+                                  WorkingDirectory="INSTALLFOLDER"/>
+                        <RegistryValue Root="HKCU" Key="Software\AVAA" Name="installed" Type="integer" Value="1" KeyPath="yes"/>
+                        <RemoveFolder Id="RemoveApplicationProgramsFolder" Directory="ApplicationProgramsFolder" On="uninstall"/>
+                    </Component>
+                </Directory>
+            </Directory>
+        </Directory>
+        
+        <!-- Регистрация зависимостей -->
+        <Property Id="VC_REDIST_INSTALLED">
+            <RegistrySearch Id="VCRedistSearch" 
+                            Root="HKLM" 
+                            Key="SOFTWARE\Microsoft\VisualStudio\14.0\VC\Runtimes\x64" 
+                            Name="Installed" 
+                            Type="raw"/>
+        </Property>
+        
+        <!-- Компоненты для установки -->
+        <Feature Id="MainFeature" Title="AVAA Antivirus" Level="1">
+            <ComponentRef Id="MainExecutable"/>
+            <ComponentRef Id="ServiceExecutable"/>
+            <ComponentRef Id="MockLicenseServer"/>
+            <ComponentRef Id="Resources"/>
+            <ComponentRef Id="ApplicationShortcut"/>
+            <ComponentRef Id="VC_Redist"/>
+        </Feature>
+        
+        <!-- UI диалоги -->
+        <UIRef Id="WixUI_InstallDir"/>
+        <UIRef Id="WixUI_ErrorProgressText"/>
+        
+        <Property Id="WIXUI_INSTALLDIR" Value="INSTALLFOLDER"/>
+        <Property Id="ARPPRODUCTICON" Value="AVAA.exe"/>
+        <Property Id="ARPHELPLINK" Value="https://github.com/NN-ARMEN/AntiVirusAppArmen"/>
+        <Property Id="ARPCONTACT" Value="support@avaa.com"/>
+        
+    </Product>
+</Wix>
