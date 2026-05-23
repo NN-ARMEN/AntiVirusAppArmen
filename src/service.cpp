@@ -26,7 +26,7 @@
 #include "shared.h"
 
 extern "C" {
-#include "tray_rpc_h.h"
+#include "avaa_rpc_h.h"
 }
 
 extern "C" void* __RPC_USER midl_user_allocate(size_t size);
@@ -116,8 +116,8 @@ constexpr wchar_t kDemoAccessToken[] = L"demo-access-token";
 constexpr wchar_t kDemoRefreshToken[] = L"demo-refresh-token";
 constexpr wchar_t kDemoLicenseTicket[] = L"demo-license-ticket";
 constexpr wchar_t kDemoLicenseExpiresAt[] = L"2026-12-31T23:59:59Z";
-constexpr wchar_t kAvDatabaseFileName[] = L"ziovpo_avdb.bin";
-constexpr wchar_t kAvDatabaseBackupFileName[] = L"ziovpo_avdb.bak";
+constexpr wchar_t kAvDatabaseFileName[] = L"AVAA_avdb.bin";
+constexpr wchar_t kAvDatabaseBackupFileName[] = L"AVAA_avdb.bak";
 constexpr DWORD kAvDatabaseMagic = 0x4244565A; // ZVDB
 constexpr DWORD kAvDatabaseVersion = 1;
 constexpr long kDatabaseUpdateIntervalSeconds = 60;
@@ -172,7 +172,7 @@ void ApplyProtectedDaclToCurrentProcess() {
 }
 
 void WriteLog(const std::wstring& message) {
-    const std::wstring log_path = GetCurrentDirectoryForModule() + L"\\ZIOVPOService.log";
+    const std::wstring log_path = GetCurrentDirectoryForModule() + L"\\AVAAService.log";
     std::wofstream log(log_path.c_str(), std::ios::app);
     if (!log) {
         return;
@@ -410,8 +410,8 @@ AvRecord MakeAvRecord(const char* signature, ObjectType object_type, uint64_t of
 
 std::vector<AvRecord> BuildDefaultAvRecords() {
     return {
-        MakeAvRecord("EICAR-ZIOVPO-PE", ObjectType::PeFile, 0, 1024 * 1024, L"Demo.PE.EicarZIOVPO"),
-        MakeAvRecord("ZIOVPO-SCRIPT-MALWARE", ObjectType::Script, 0, 1024 * 1024, L"Demo.Script.ZIOVPO")
+        MakeAvRecord("EICAR-AVAA-PE", ObjectType::PeFile, 0, 1024 * 1024, L"Demo.PE.EicarAVAA"),
+        MakeAvRecord("AVAA-SCRIPT-MALWARE", ObjectType::Script, 0, 1024 * 1024, L"Demo.Script.AVAA")
     };
 }
 
@@ -686,7 +686,7 @@ bool RequestRecordFromUpdateServer(const AvRecord& record) {
 
 bool DownloadUpdatedAvDatabase() {
     std::vector<AvRecord> records = BuildDefaultAvRecords();
-    records.push_back(MakeAvRecord("ZIOVPO-UPDATED-SIGNATURE", ObjectType::Script, 0, 1024 * 1024, L"Demo.Script.Updated"));
+    records.push_back(MakeAvRecord("AVAA-UPDATED-SIGNATURE", ObjectType::Script, 0, 1024 * 1024, L"Demo.Script.Updated"));
     return WriteAllBytes(AvDatabasePath(), SerializeAvDatabase(L"2026-05-22", records));
 }
 
@@ -1188,7 +1188,7 @@ bool HttpRequestJson(
     response.clear();
     statusCode = 0;
 
-    const std::wstring baseUrl = GetEnvOrDefault(L"ZIOVPO_API_BASE_URL", L"https://localhost:8443");
+    const std::wstring baseUrl = GetEnvOrDefault(L"AVAA_API_BASE_URL", L"https://localhost:8443");
     const std::wstring fullUrl = baseUrl + path;
 
     URL_COMPONENTSW url{};
@@ -1206,7 +1206,7 @@ bool HttpRequestJson(
     }
 
     HINTERNET session = WinHttpOpen(
-        L"ZIOVPOService/1.0",
+        L"AVAAService/1.0",
         WINHTTP_ACCESS_TYPE_DEFAULT_PROXY,
         WINHTTP_NO_PROXY_NAME,
         WINHTTP_NO_PROXY_BYPASS,
@@ -1333,7 +1333,7 @@ long TryDemoAuthenticate(const std::wstring& login, const std::wstring& password
 }
 
 long AuthenticateUser(const std::wstring& login, const std::wstring& password, std::wstring& error) {
-    const std::wstring path = GetEnvOrDefault(L"ZIOVPO_LOGIN_PATH", L"/api/auth/login");
+    const std::wstring path = GetEnvOrDefault(L"AVAA_LOGIN_PATH", L"/api/auth/login");
     const std::wstring body =
         L"{\"login\":\"" + JsonEscape(login) + L"\",\"password\":\"" + JsonEscape(password) + L"\"}";
 
@@ -1397,7 +1397,7 @@ long RefreshTokens() {
         return 0;
     }
 
-    const std::wstring path = GetEnvOrDefault(L"ZIOVPO_REFRESH_PATH", L"/api/auth/refresh");
+    const std::wstring path = GetEnvOrDefault(L"AVAA_REFRESH_PATH", L"/api/auth/refresh");
     const std::wstring body = L"{\"refreshToken\":\"" + JsonEscape(refreshToken) + L"\"}";
 
     DWORD status = 0;
@@ -1439,7 +1439,7 @@ long QueryLicenseStatus(std::wstring& error) {
         return 0;
     }
 
-    const std::wstring path = GetEnvOrDefault(L"ZIOVPO_LICENSE_STATUS_PATH", L"/api/license/status");
+    const std::wstring path = GetEnvOrDefault(L"AVAA_LICENSE_STATUS_PATH", L"/api/license/status");
     DWORD status = 0;
     std::wstring response;
     if (!HttpRequestJson(L"GET", path, L"", accessToken, status, response) || status < 200 || status >= 300) {
@@ -1504,7 +1504,7 @@ long ActivateLicense(const std::wstring& code, std::wstring& error) {
         return 0;
     }
 
-    const std::wstring path = GetEnvOrDefault(L"ZIOVPO_ACTIVATE_PATH", L"/api/license/activate");
+    const std::wstring path = GetEnvOrDefault(L"AVAA_ACTIVATE_PATH", L"/api/license/activate");
     const std::wstring body = L"{\"activationCode\":\"" + JsonEscape(code) + L"\"}";
 
     DWORD status = 0;
@@ -1778,7 +1778,7 @@ DWORD WINAPI RpcThreadProc(void*) {
         return status;
     }
 
-    status = RpcServerRegisterIf(ZIOVPOControl_v1_0_s_ifspec, nullptr, nullptr);
+    status = RpcServerRegisterIf(AVAA_Control_v1_0_s_ifspec, nullptr, nullptr);
     if (status != RPC_S_OK) {
         WriteLog(L"RpcServerRegisterIf failed, status=" + std::to_wstring(status));
         SetEvent(g_stop_event);
@@ -1879,7 +1879,7 @@ void WINAPI ServiceMain(DWORD, LPWSTR*) {
     WriteLog(L"Service is stopping");
     RpcMgmtStopServerListening(nullptr);
     WaitForSingleObject(rpc_thread, 3000);
-    RpcServerUnregisterIf(ZIOVPOControl_v1_0_s_ifspec, nullptr, FALSE);
+    RpcServerUnregisterIf(AVAA_Control_v1_0_s_ifspec, nullptr, FALSE);
     CloseHandle(rpc_thread);
     if (g_refresh_thread) {
         WaitForSingleObject(g_refresh_thread, 3000);

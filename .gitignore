@@ -1,11 +1,48 @@
+# Build directories
 build/
-out/
+x64/
+Debug/
+Release/
+*.exe
+*.dll
+*.lib
+*.pdb
+*.obj
+*.ilk
+*.exp
+
+# IDE files
 .vs/
 .vscode/
-CMakeUserPresets.json
-*.user
 *.suo
-*.obj
-*.pdb
-*.ilk
-*.exe
+*.user
+*.sln
+*.vcxproj*
+*.filters
+
+# Temporary files
+*.log
+*.tmp
+*.bak
+*.cache
+*.tlog
+*.lastbuildstate
+
+# Database files
+*.bin
+*.bak
+*.db
+
+# Sound files (optional, remove if you want to include)
+*.mp3
+*.wav
+
+# Icon files (create your own)
+*.ico
+
+# Generated RPC files
+rpc_gen/
+
+# Windows specific
+Thumbs.db
+desktop.ini

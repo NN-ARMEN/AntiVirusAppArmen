@@ -1,0 +1,23 @@
+[
+    uuid(12345678-1234-1234-1234-123456789ABC),
+    version(1.0),
+    implicit_handle(handle_t)
+]
+interface AVAA
+{
+    void StopService();
+    int GetServiceStatus();
+    void RegisterClient([in] long sessionId, [in] long processId);
+    void UnregisterClient([in] long processId);
+    void AuthLogin([in] const char* username, [in] const char* password, 
+                   [out] BOOL* success, [out][size_is(errorSize)] char* errorMessage, 
+                   [in] int errorSize);
+    void AuthLogout([out] BOOL* success);
+    void GetCurrentUser([out][size_is(usernameSize)] char* username, 
+                        [in] int usernameSize, [out] BOOL* isAuthenticated);
+    void GetLicenseStatus([out][size_is(statusSize)] char* status, [in] int statusSize, 
+                          [out] BOOL* isValid, [out] DWORD* validUntil);
+    void ActivateProduct([in] const char* activationCode, [out] BOOL* success,
+                         [out][size_is(errorSize)] char* errorMessage, [in] int errorSize);
+    BOOL HasValidLicense();
+}

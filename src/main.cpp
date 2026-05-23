@@ -28,9 +28,9 @@ long RpcGetDirectoryMonitoringResult(std::wstring& resultText, std::wstring& err
 
 namespace {
 
-constexpr wchar_t kWindowClassName[] = L"ZIOVPOPracticeTrayWindow";
-constexpr wchar_t kWindowTitle[] = L"ZIOVPO Practice 1";
-constexpr wchar_t kMutexName[] = L"Local\\ZIOVPOPractice1TrayAppMutex";
+constexpr wchar_t kWindowClassName[] = L"AVAAPracticeTrayWindow";
+constexpr wchar_t kWindowTitle[] = L"AVAA Antivirus";
+constexpr wchar_t kMutexName[] = L"Local\\AVAAPractice1TrayAppMutex";
 constexpr UINT kTrayIconId = 1;
 constexpr UINT kTrayMessage = WM_APP + 1;
 constexpr UINT kMenuOpen = 50001;
@@ -106,15 +106,15 @@ void PlayWindowOpenSound() {
         return;
     }
 
-    mciSendStringW(L"close ziovpo_open_sound", nullptr, 0, nullptr);
+    mciSendStringW(L"close AVAA_open_sound", nullptr, 0, nullptr);
 
     const std::wstring open_command =
-        L"open \"" + sound_path + L"\" type mpegvideo alias ziovpo_open_sound";
+        L"open \"" + sound_path + L"\" type mpegvideo alias AVAA_open_sound";
     if (mciSendStringW(open_command.c_str(), nullptr, 0, nullptr) != 0) {
         return;
     }
 
-    mciSendStringW(L"play ziovpo_open_sound from 0", nullptr, 0, nullptr);
+    mciSendStringW(L"play AVAA_open_sound from 0", nullptr, 0, nullptr);
 }
 
 std::wstring GetWindowTextValue(HWND hwnd) {
@@ -480,7 +480,7 @@ bool AddTrayIcon() {
     nid.uFlags = NIF_MESSAGE | NIF_ICON | NIF_TIP;
     nid.uCallbackMessage = kTrayMessage;
     nid.hIcon = LoadIcon(nullptr, IDI_APPLICATION);
-    wcscpy_s(nid.szTip, L"ZIOVPO Practice 1");
+    wcscpy_s(nid.szTip, L"AVAA Antivirus");
 
     if (g_tray_icon_added) {
         if (!Shell_NotifyIcon(NIM_MODIFY, &nid) && !Shell_NotifyIcon(NIM_ADD, &nid)) {
@@ -739,9 +739,10 @@ HWND CreateMainWindow() {
 } // namespace
 
 int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR command_line, int show_command) {
-    if (!EnsureServiceContextOrStartAndExit()) {
-        return 0;
-    }
+    // Временно отключено для тестирования без службы
+    // if (!EnsureServiceContextOrStartAndExit()) {
+    //     return 0;
+    // }
 
     HANDLE single_instance_mutex = CreateMutex(nullptr, TRUE, kMutexName);
     if (!single_instance_mutex) {

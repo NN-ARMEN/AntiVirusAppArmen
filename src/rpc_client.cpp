@@ -7,11 +7,13 @@
 #include "shared.h"
 
 extern "C" {
-#include "tray_rpc_h.h"
+#include "avaa_rpc_h.h"
 }
 
+handle_t hAVAA_ControlBinding = NULL;
+
 bool EnsureBinding() {
-    if (hZIOVPOControlBinding) {
+    if (hAVAA_ControlBinding) {
         return true;
     }
 
@@ -29,14 +31,14 @@ bool EnsureBinding() {
         return false;
     }
 
-    status = RpcBindingFromStringBindingW(string_binding, &hZIOVPOControlBinding);
+    status = RpcBindingFromStringBindingW(string_binding, &hAVAA_ControlBinding);
     RpcStringFreeW(&string_binding);
     return status == RPC_S_OK;
 }
 
 void DropBinding() {
-    if (hZIOVPOControlBinding) {
-        RpcBindingFree(&hZIOVPOControlBinding);
+    if (hAVAA_ControlBinding) {
+        RpcBindingFree(&hAVAA_ControlBinding);
     }
 }
 
